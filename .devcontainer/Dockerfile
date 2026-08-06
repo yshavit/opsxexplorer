@@ -121,9 +121,9 @@ COPY init-firewall.sh /usr/local/bin/
 USER root
 RUN chmod +x /usr/local/bin/init-firewall.sh
 
-# Named volumes (cargo target, nvim data/state) mount over directories owned
-# by root by default; fix ownership on every start.
-RUN printf '#!/bin/bash\nchown -R node:node /workspace/target /home/node/.local/share/nvim /home/node/.local/state\n' \
+# Named volumes (cargo target/registry, nvim data/state) mount over
+# directories owned by root by default; fix ownership on every start.
+RUN printf '#!/bin/bash\nchown -R node:node /workspace/target /home/node/.cargo/registry /home/node/.local/share/nvim /home/node/.local/state\n' \
   > /usr/local/bin/fix-workspace-perms.sh && \
   chmod +x /usr/local/bin/fix-workspace-perms.sh
 
