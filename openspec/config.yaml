@@ -3,11 +3,39 @@ schema: spec-driven
 # Project context (optional)
 # This is shown to AI when creating artifacts.
 # Add your tech stack, conventions, style guides, domain knowledge, etc.
-# Example:
-#   context: |
-#     Tech stack: TypeScript, React, Node.js
-#     We use conventional commits
-#     Domain: e-commerce platform
+context: |
+  opsxexplorer is a terminal UI (Rust, ratatui) for browsing OpenSpec
+  changes and specs within a local git repo.
+
+  It reads OpenSpec's own file layout:
+    - Spec of record: ./openspec/specs/${capability}/spec.md
+    - Active change:  ./openspec/changes/${change-name}/
+    - Archived change: ./openspec/changes/archive/${date}-${change-name}/
+  Each change directory contains proposal.md, specs/${capability}/spec.md,
+  design.md, and tasks.md.
+
+  Core problem this tool solves: a change's spec.md has "## ADDED
+  Requirements" and "## MODIFIED Requirements" sections, but the MODIFIED
+  section prints each requirement in full rather than as a delta against
+  the spec of record. opsxexplorer computes and renders that delta.
+
+  Diff unit is a single requirement, not the whole spec.md file. For each
+  change, for each capability it touches, show:
+    - added requirements as +++ (green)
+    - removed requirements as --- (red)
+    - modified requirements as a standard +++/--- diff against the
+      corresponding requirement in the spec of record
+
+  Diff base selection (this is the trickiest invariant to preserve):
+    - active change   -> spec of record at HEAD
+    - archived change -> spec of record as it was at the commit
+                         immediately BEFORE the commit that archived it
+                         (not the archiving commit itself, not current HEAD)
+  This requires walking git history (git2), not just reading working-tree
+  files.
+
+  UI flow: list changes (active first, then archived) -> select a change ->
+  see per-capability requirement diffs.
 
 # Per-artifact rules (optional)
 # Add custom rules for specific artifacts.
