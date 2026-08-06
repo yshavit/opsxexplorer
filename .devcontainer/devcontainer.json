@@ -1,0 +1,34 @@
+{
+  "name": "Claude Code Sandbox",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "args": {
+      "TZ": "${localEnv:TZ:America/New_York}",
+      "CLAUDE_CODE_VERSION": "latest",
+      "GIT_DELTA_VERSION": "0.18.2",
+      "ZSH_IN_DOCKER_VERSION": "1.2.0"
+    }
+  },
+  "runArgs": ["--name=opsxexplorer-devcontainer", "--cap-add=NET_ADMIN", "--cap-add=NET_RAW", "--dns=1.1.1.1", "--dns=8.8.8.8"],
+  "remoteUser": "node",
+  "mounts": [
+    "source=claude-code-bashhistory-${devcontainerId},target=/commandhistory,type=volume",
+    "source=claude-code-config-${devcontainerId},target=/home/node/.claude,type=volume",
+    "source=claude-code-gh-config-${devcontainerId},target=/home/node/.config/gh,type=volume",
+    "source=${localWorkspaceFolder}/.devcontainer-extras/nvim-config,target=/home/node/.config/nvim,type=bind",
+    "source=opsxexplorer-nvim-data-${devcontainerId},target=/home/node/.local/share/nvim,type=volume",
+    "source=opsxexplorer-nvim-state-${devcontainerId},target=/home/node/.local/state,type=volume",
+    "source=opsxexplorer-cargo-target-${devcontainerId},target=/workspace/target,type=volume",
+    "source=opsxexplorer-cargo-registry-${devcontainerId},target=/home/node/.cargo/registry,type=volume"
+  ],
+  "containerEnv": {
+    "NODE_OPTIONS": "--max-old-space-size=4096",
+    "CLAUDE_CONFIG_DIR": "/home/node/.claude",
+    "POWERLEVEL9K_DISABLE_GITSTATUS": "true",
+    "NVIM_DISABLE_TREESITTER": "1"
+  },
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
+  "workspaceFolder": "/workspace",
+  "postStartCommand": "sudo /usr/local/bin/init-firewall.sh && sudo /usr/local/bin/fix-workspace-perms.sh",
+  "waitFor": "postStartCommand"
+}
