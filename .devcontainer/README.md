@@ -37,17 +37,7 @@ just devcontainer-rebuild
 
 ## Zed ACP integration
 
-Add to your (host) Zed `settings.json`:
-
-```json
-"agent_servers": {
-  "Claude Agent (Container)": {
-    "type": "custom",
-    "command": "node",
-    "args": ["<path-to-this-checkout>\\.devcontainer\\acp-cwd-proxy.mjs"]
-  }
-}
-```
+See <https://github.com/yshavit/acp-cwd-proxy>
 
 ## Host-specific extras (e.g. statusline)
 
