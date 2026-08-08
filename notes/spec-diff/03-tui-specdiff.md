@@ -35,9 +35,10 @@ Existing TUI:
   *headers* are selectable, since only they collapse.
 
 Change 2 supplies, per change + capability: requirement entries ordered ADDED →
-MODIFIED → REMOVED, each with an intro block and scenarios, where changed blocks
-carry word-level `Equal`/`Delete`/`Insert` runs over the body text change 1
-produced.
+MODIFIED → REMOVED → RENAMED, each with an intro block and scenarios, where
+changed blocks carry word-level `Equal`/`Delete`/`Insert` runs over the body text
+change 1 produced — plus a list of per-entry errors alongside the entries that
+did compute.
 
 > **Updated after change 1 was specified.** This originally said "over faithful
 > source text." Change 1's bodies are `mdq`'s re-serialisation of the parsed
@@ -48,6 +49,31 @@ produced.
 > guarantees that both sides are normalised identically, and that capability
 > enumeration is alphabetically stable — the property the tab bar below relies
 > on.
+
+> **Updated after change 2 was specified.** Four things it settled that this
+> pane has to absorb. See
+> `openspec/changes/spec-diff/{specs/spec-diff/spec.md,design.md}`.
+>
+> - **Four operation groups, not three.** RENAMED became a first-class operation
+>   rather than a name-diffed MODIFIED, so it needs a gutter marker of its own
+>   (see below). A delta that renames a requirement *and* modifies it under the
+>   new name yields **one** entry carrying both names and the content diff — the
+>   pane must not render it twice.
+> - **Every intro and scenario body arrives as one of five states**, not as raw
+>   text: `Unchanged`, `Changed` (with runs), `Added`, `Deleted`, `Unmentioned`.
+>   All five need a visual treatment, and they sit *below* the requirement level.
+> - **A `Changed` block holds two strings, not one.** Runs are byte ranges into
+>   the base body and the delta body separately — `Equal` carries a range into
+>   each, `Delete` only into the base, `Insert` only into the delta. Rendering
+>   one reflowed paragraph means interleaving slices of two strings, which is
+>   what `wrap_spans` is actually being handed. Offsets are into change 1's
+>   normalised bodies; there is no mapping back to the file.
+> - **Errors are per entry, and collected rather than fatal.** A capability's
+>   diff carries both the requirements it computed and the entries that failed,
+>   so a tab renders good requirements *and* an error notice together. This is a
+>   level below the per-capability isolation noted further down — that keeps one
+>   bad capability from blanking the other tabs; this keeps one bad requirement
+>   from blanking the rest of its own tab.
 
 ## Decisions already made
 
@@ -68,8 +94,11 @@ the candidates.
 
 ### Word-diff, wrapped — not `+`/`-` line pairs, not horizontal scroll
 
-The longest line in this repo's specs is **476 characters**
-(`openspec/specs/tui-changelist/spec.md:115`). At 65% of a 120-column terminal
+The longest line in this repo's specs is **684 characters**
+(`openspec/specs/spec-model/spec.md:10`, written since this brief was drafted;
+the 476-character `openspec/specs/tui-changelist/spec.md:115` it originally
+cited is still there and still the worst case in that file). At 65% of a
+120-column terminal
 the right pane's inner width is ~76. Line-level `+`/`-` on such a paragraph
 costs twelve wrapped rows to convey one appended sentence, with two
 near-identical blocks stacked. **Word-diff (`git diff --word-diff` style):** one
@@ -122,6 +151,30 @@ unmentioned** (dimmed). The `?` state comes from change 2 and means "present in
 the base spec, not mentioned in the delta; cannot tell whether dropped or
 untouched" — see `02-spec-diff.md` for why this exists. It must be visually
 distinct from `-`, not a shade of red.
+
+> **Updated after change 2 was specified.** The four states above are right but
+> mislevelled, and one is missing.
+>
+> - **A fifth marker is needed for RENAMED**, now that it is a first-class
+>   operation. It marks a requirement whose *name* changed, so the row has to
+>   show both names — old and new — while its intro and scenarios carry their own
+>   states underneath. `»` is the obvious candidate; the brief takes no position.
+> - **`+`, `~`, `-` and the rename marker are requirement-level; `?` is not.**
+>   Change 2's `Operation` has no unmentioned variant — a base requirement the
+>   delta never names produces no entry at all, so it is not on screen to mark.
+>   `Unmentioned` is a *piece* state, reached only inside a modified or renamed
+>   requirement. So `?` can never appear on a requirement row: it belongs on
+>   scenario rows and on the intro block, which means those rows need markers of
+>   their own rather than inheriting their requirement's. The sketch below
+>   already gets this right — the `?` sits on a scenario row inside a `~`
+>   requirement — but the prose above does not.
+> - **The intro block is the sharp case.** An `Unmentioned` intro renders the
+>   base's intro, which is the same text an `Unchanged` intro renders. Change 2
+>   keeps the two states apart, but unless this pane gives the intro block a
+>   marker or dims it, they are indistinguishable on screen — and an intro is
+>   the one piece with no header row to hang a gutter marker off. Solving this is
+>   this change's job, not change 2's; it is the one place where the delta's
+>   silence could genuinely go unnoticed by a reader.
 
 ### Collapse defaults
 
@@ -192,11 +245,22 @@ the feature renders. It is its own end-to-end test fixture.
   `MissingBaseSpec` (a MODIFIED/REMOVED entry with no spec of record at all),
   `Markdown` (the file is not parseable markdown) and `Structure` (a stray
   scenario, an unrecognised `## <OP> Requirements` section, a `FROM:` with no
-  `TO:`). Two properties of it shape this pane:
+  `TO:`). Change 2 adds one more, and it is the one this bullet's own example
+  actually names: `MissingBaseRequirement` — the base spec exists but has no
+  requirement under that name, i.e. a mistyped heading or a rename done by hand.
+  Do not conflate it with `MissingBaseSpec`; they are different authoring
+  mistakes and change 2 kept them separate deliberately. Three properties of the
+  vocabulary shape this pane:
   - **Failures are isolated per capability.** A malformed delta in one
     capability must render as an error *inside that tab* while the change's
     other tabs still display normally — change 1 loads one capability per call
     specifically so this is true. Do not let one bad capability blank the pane.
+  - **Failures are isolated per requirement too, not only per capability.**
+    `MissingBaseRequirement` is reported against the entry it concerns and
+    collected alongside the requirements that did compute, so a tab shows an
+    error notice *and* its good content in the same view. Rendering the error
+    instead of the content would throw away work change 2 went out of its way to
+    preserve.
   - **Errors carry a structural location, not a line number.** `mdq` drops
     source positions, so an error identifies itself as e.g. *under
     `## MODIFIED Requirements`, requirement "Change discovery"* — there is no

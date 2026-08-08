@@ -1,7 +1,7 @@
 mod error;
 mod load;
 mod model;
-mod parse;
+pub(crate) mod parse;
 
 pub use error::{Location, SpecError, StructureErrorKind};
 pub use load::{capabilities, load};

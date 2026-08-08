@@ -16,14 +16,18 @@ context: |
 
   Core problem this tool solves: a change's spec.md has "## ADDED
   Requirements" and "## MODIFIED Requirements" sections, but the MODIFIED
-  section prints each requirement in full rather than as a delta against
-  the spec of record. opsxexplorer computes and renders that delta.
+  section does not reliably print each requirement in full — it may restate
+  the requirement or supply only the pieces that changed, and the two are
+  indistinguishable in the source. opsxexplorer computes and renders the
+  delta against the spec of record, and content present in the spec of
+  record but unmentioned by the delta is ambiguous by construction and is
+  surfaced as such rather than guessed at.
 
   Diff unit is a single requirement, not the whole spec.md file. For each
   change, for each capability it touches, show:
     - added requirements as +++ (green)
     - removed requirements as --- (red)
-    - modified requirements as a standard +++/--- diff against the
+    - modified requirements as a word-level inline diff against the
       corresponding requirement in the spec of record
 
   Diff base selection (this is the trickiest invariant to preserve):
