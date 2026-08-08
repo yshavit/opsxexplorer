@@ -262,7 +262,11 @@ mod tests {
             "openspec/changes/archive/2026-01-01-old-thing/proposal.md",
             "x-corrected",
         );
-        write_file(dir.path(), "openspec/specs/cap/spec.md", "v2-after-correction");
+        write_file(
+            dir.path(),
+            "openspec/specs/cap/spec.md",
+            "v2-after-correction",
+        );
         stage_and_commit(
             &repo,
             "fix typo in archived proposal",

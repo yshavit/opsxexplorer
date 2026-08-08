@@ -1,16 +1,21 @@
 mod app;
+mod diff_row;
+mod layout;
 mod row;
+mod wrap;
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, List, ListItem, Scrollbar, ScrollbarOrientation, ScrollbarState};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span, Text};
+use ratatui::widgets::{
+    Block, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+};
 
 use crate::changes::Changes;
 
-use app::App;
+use app::{App, Focus, PaneView};
 use row::Row;
 
 pub fn run() -> color_eyre::Result<()> {
@@ -46,11 +51,13 @@ fn render(frame: &mut Frame, app: &mut App) {
             .areas(frame.area());
 
     render_left_pane(frame, left, app);
-    render_right_pane(frame, right);
+    render_right_pane(frame, right, app);
 }
 
 fn render_left_pane(frame: &mut Frame, area: Rect, app: &mut App) {
-    let block = Block::bordered().title("Changes");
+    let block = Block::bordered()
+        .title("Changes")
+        .border_style(focus_border_style(app.focus() == Focus::Left));
     let inner_width = block.inner(area).width as usize;
 
     let rows = app.rows();
@@ -83,8 +90,144 @@ fn render_left_pane(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
 }
 
-fn render_right_pane(frame: &mut Frame, area: Rect) {
-    frame.render_widget(Block::bordered(), area);
+fn render_right_pane(frame: &mut Frame, area: Rect, app: &mut App) {
+    let border_style = focus_border_style(app.focus() == Focus::Right);
+
+    match app.pane_view() {
+        PaneView::NotAChange => render_message_pane(
+            frame,
+            area,
+            border_style,
+            "Select a change to see its spec diff.",
+        ),
+        PaneView::PaneError(msg) => render_message_pane(frame, area, border_style, &msg),
+        PaneView::NoCapabilities => render_message_pane(
+            frame,
+            area,
+            border_style,
+            "This change has no spec changes.",
+        ),
+        PaneView::Tabs {
+            names,
+            selected,
+            tab_error,
+        } => render_diff_tabs(frame, area, app, &names, selected, tab_error, border_style),
+    }
+}
+
+/// Renders the pane's placeholder and error states: a bordered box with no
+/// tab bar and a single message, used whenever there is no diff tree to show.
+fn render_message_pane(frame: &mut Frame, area: Rect, border_style: Style, message: &str) {
+    let block = Block::bordered().border_style(border_style);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    frame.render_widget(Paragraph::new(message.to_string()), inner);
+}
+
+/// Renders the pane's normal state: a tab bar in the border title and,
+/// below it, either the selected tab's error notice or its flattened,
+/// wrapped, scrollable diff tree.
+fn render_diff_tabs(
+    frame: &mut Frame,
+    area: Rect,
+    app: &mut App,
+    names: &[String],
+    selected: usize,
+    tab_error: Option<String>,
+    border_style: Style,
+) {
+    let block = Block::bordered()
+        .border_style(border_style)
+        .title(tab_bar_title(names, selected));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if let Some(msg) = tab_error {
+        frame.render_widget(
+            Paragraph::new(msg).style(Style::new().fg(Color::Red)),
+            inner,
+        );
+        app.set_line_offset(0);
+        app.set_max_line_offset(0);
+        render_right_scrollbar(frame, area, 0, 0);
+        return;
+    }
+
+    let inner_width = inner.width as usize;
+    let inner_height = inner.height as usize;
+    let cursor = app.cursor();
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut selected_range: Option<(usize, usize)> = None;
+    for (i, row) in app.diff_rows().iter().enumerate() {
+        let row_lines = layout::row_lines(row, inner_width);
+        let start = lines.len();
+        if i == cursor {
+            selected_range = Some((start, start + row_lines.len()));
+        }
+        lines.extend(row_lines);
+    }
+
+    let max_line_offset = lines.len().saturating_sub(inner_height);
+    let mut offset = app.line_offset().min(max_line_offset);
+    if let Some((start, end)) = selected_range {
+        if start < offset {
+            offset = start;
+        } else if inner_height > 0 && end > offset + inner_height {
+            offset = end.saturating_sub(inner_height);
+        }
+    }
+    app.set_line_offset(offset);
+    app.set_max_line_offset(max_line_offset);
+
+    if let Some((start, end)) = selected_range {
+        for line in &mut lines[start..end] {
+            line.style = line
+                .style
+                .patch(Style::new().add_modifier(Modifier::REVERSED));
+        }
+    }
+
+    let paragraph = Paragraph::new(Text::from(lines)).scroll((offset as u16, 0));
+    frame.render_widget(paragraph, inner);
+
+    render_right_scrollbar(frame, area, offset, max_line_offset);
+}
+
+/// Mirrors the left pane's horizontal scrollbar handling (`render_left_pane`):
+/// `content_length` is `max_offset + 1`, the count of valid scroll positions,
+/// and the scrollbar is rendered even when there is nothing to scroll.
+fn render_right_scrollbar(frame: &mut Frame, area: Rect, offset: usize, max_line_offset: usize) {
+    let mut scrollbar_state = ScrollbarState::new(max_line_offset + 1).position(offset);
+    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
+    frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
+}
+
+/// Builds the tab bar as styled spans for `Block::title`, rather than using
+/// ratatui's `Tabs` widget, which renders into a `Rect` of its own and can't
+/// draw into a block's border (see design.md).
+fn tab_bar_title(names: &[String], selected: usize) -> Line<'static> {
+    let mut spans = Vec::with_capacity(names.len() * 2);
+    for (i, name) in names.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw(" │ "));
+        }
+        let style = if i == selected {
+            Style::new().add_modifier(Modifier::REVERSED)
+        } else {
+            Style::default()
+        };
+        spans.push(Span::styled(name.clone(), style));
+    }
+    Line::from(spans)
+}
+
+fn focus_border_style(focused: bool) -> Style {
+    if focused {
+        Style::new().add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    }
 }
 
 /// Builds a row's full-width styled spans, before any horizontal scroll offset is applied.
