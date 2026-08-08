@@ -1,9 +1,50 @@
+use std::collections::HashSet;
+
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::widgets::ListState;
 
-use crate::changes::Changes;
+use crate::changes::{Change, Changes, ChangesError};
+use crate::diff::{self, CapabilityDiff};
+use crate::specs::{self, SpecError};
 
+use super::diff_row::{self, DiffRow, RowKey};
 use super::row::{self, Row};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Focus {
+    Left,
+    Right,
+}
+
+/// Which capability's diff, if any, `load_diff_state` produced for the
+/// currently selected left-pane row. `Loaded` holds one entry per
+/// capability, in the order `specs::capabilities` enumerated them, each
+/// either the computed diff or the error that kept it from loading — one
+/// bad capability costs its own tab, not the pane (see design.md).
+enum DiffPaneState {
+    /// The left-pane cursor is not on a change row.
+    NotAChange,
+    /// `Changes::resolve`/`views`/`specs::capabilities` failed for the whole change.
+    PaneError(String),
+    /// The change carries no delta specs at all.
+    NoCapabilities,
+    Loaded(Vec<(String, Result<CapabilityDiff, SpecError>)>),
+}
+
+/// A rendering-friendly summary of the right pane's current state, built
+/// fresh from `DiffPaneState` on every call so it never drifts from it.
+pub enum PaneView {
+    NotAChange,
+    PaneError(String),
+    NoCapabilities,
+    Tabs {
+        names: Vec<String>,
+        selected: usize,
+        /// Set when the selected tab's capability failed to load; its
+        /// sibling tabs are unaffected and still render normally.
+        tab_error: Option<String>,
+    },
+}
 
 pub struct App {
     changes: Changes,
@@ -13,17 +54,37 @@ pub struct App {
     /// `max_scroll` as computed by the most recent render, cached so `$`/`End` can jump
     /// straight to it without `handle_key` needing to know the pane's rendered width.
     max_h_scroll: usize,
+
+    focus: Focus,
+    diff_state: DiffPaneState,
+    tab: usize,
+    expanded: HashSet<RowKey>,
+    cursor: usize,
+    line_offset: usize,
+    /// `max_line_offset` as computed by the most recent render, cached for the same
+    /// reason as `max_h_scroll` (see design.md).
+    max_line_offset: usize,
 }
 
 impl App {
     pub fn new(changes: Changes) -> Self {
-        App {
+        let mut app = App {
             changes,
             archived_expanded: false,
             list_state: ListState::default().with_selected(Some(0)),
             h_scroll: 0,
             max_h_scroll: 0,
-        }
+
+            focus: Focus::Left,
+            diff_state: DiffPaneState::NotAChange,
+            tab: 0,
+            expanded: HashSet::new(),
+            cursor: 0,
+            line_offset: 0,
+            max_line_offset: 0,
+        };
+        app.recompute_diff();
+        app
     }
 
     pub fn rows(&self) -> Vec<Row<'_>> {
@@ -48,7 +109,72 @@ impl App {
         self.max_h_scroll = max_h_scroll;
     }
 
+    pub fn focus(&self) -> Focus {
+        self.focus
+    }
+
+    /// The flattened, navigable rows of the currently selected tab's diff.
+    /// Empty when there is no successfully loaded diff to show (see `pane_view`
+    /// for why: not a change, a pane-level error, no capabilities, or the
+    /// selected tab itself failed to load).
+    pub fn diff_rows(&self) -> Vec<DiffRow<'_>> {
+        match self.current_capability_diff() {
+            Some(diff) => diff_row::flatten(diff, &self.expanded),
+            None => Vec::new(),
+        }
+    }
+
+    pub fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    pub fn line_offset(&self) -> usize {
+        self.line_offset
+    }
+
+    pub fn set_line_offset(&mut self, offset: usize) {
+        self.line_offset = offset;
+    }
+
+    /// Called by the right pane's renderer after computing the current
+    /// `max_line_offset`, mirroring `set_max_h_scroll`. Cached for parity
+    /// with the left pane even though nothing currently reads it back; the
+    /// field itself is what a future jump-to-end key would clamp against.
+    pub fn set_max_line_offset(&mut self, max_line_offset: usize) {
+        self.max_line_offset = max_line_offset;
+    }
+
+    pub fn pane_view(&self) -> PaneView {
+        match &self.diff_state {
+            DiffPaneState::NotAChange => PaneView::NotAChange,
+            DiffPaneState::PaneError(msg) => PaneView::PaneError(msg.clone()),
+            DiffPaneState::NoCapabilities => PaneView::NoCapabilities,
+            DiffPaneState::Loaded(tabs) => PaneView::Tabs {
+                names: tabs.iter().map(|(name, _)| name.clone()).collect(),
+                selected: self.tab,
+                tab_error: tabs
+                    .get(self.tab)
+                    .and_then(|(_, result)| result.as_ref().err())
+                    .map(|e| e.to_string()),
+            },
+        }
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) {
+        if key.code == KeyCode::Tab {
+            self.focus = match self.focus {
+                Focus::Left => Focus::Right,
+                Focus::Right => Focus::Left,
+            };
+            return;
+        }
+        match self.focus {
+            Focus::Left => self.handle_left_key(key),
+            Focus::Right => self.handle_right_key(key),
+        }
+    }
+
+    fn handle_left_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
             KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
@@ -68,11 +194,25 @@ impl App {
         }
     }
 
+    fn handle_right_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => self.move_cursor(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.move_cursor(1),
+            KeyCode::Enter | KeyCode::Char(' ') => self.toggle_cursor_row(),
+            KeyCode::Right | KeyCode::Char('l') => self.set_cursor_row_expanded(true),
+            KeyCode::Left | KeyCode::Char('h') => self.set_cursor_row_expanded(false),
+            KeyCode::Char(']') => self.move_tab(1),
+            KeyCode::Char('[') => self.move_tab(-1),
+            _ => {}
+        }
+    }
+
     fn move_selection(&mut self, delta: isize) {
         let rows = self.rows();
         let current = self.list_state.selected().unwrap_or(0);
         self.list_state
             .select(Some(next_selectable(&rows, current, delta)));
+        self.recompute_diff();
     }
 
     fn toggle_archived_at_cursor(&mut self) {
@@ -91,6 +231,123 @@ impl App {
                 self.list_state.select(Some(idx));
             }
         }
+        self.recompute_diff();
+    }
+
+    fn move_cursor(&mut self, delta: isize) {
+        let rows = self.diff_rows();
+        self.cursor = next_selectable_row(&rows, self.cursor, delta);
+    }
+
+    fn toggle_cursor_row(&mut self) {
+        let Some((key, expanded)) = self.cursor_row_key_and_state() else {
+            return;
+        };
+        self.set_expanded(key, !expanded);
+    }
+
+    fn set_cursor_row_expanded(&mut self, expand: bool) {
+        let Some((key, _)) = self.cursor_row_key_and_state() else {
+            return;
+        };
+        self.set_expanded(key, expand);
+    }
+
+    fn cursor_row_key_and_state(&self) -> Option<(RowKey, bool)> {
+        let rows = self.diff_rows();
+        let row = rows.get(self.cursor)?;
+        Some((row.key()?.clone(), row.expanded().unwrap_or(false)))
+    }
+
+    fn set_expanded(&mut self, key: RowKey, expand: bool) {
+        if expand {
+            self.expanded.insert(key);
+        } else {
+            self.expanded.remove(&key);
+        }
+    }
+
+    fn move_tab(&mut self, delta: isize) {
+        let DiffPaneState::Loaded(tabs) = &self.diff_state else {
+            return;
+        };
+        let len = tabs.len() as isize;
+        if len == 0 {
+            return;
+        }
+        let new = (self.tab as isize + delta).clamp(0, len - 1) as usize;
+        if new != self.tab {
+            self.tab = new;
+            self.reset_cursor_to_first_selectable();
+        }
+    }
+
+    /// Recomputes the right pane's diff state for whatever the left pane's
+    /// cursor is currently on. Called whenever the left-pane selection
+    /// moves — never per frame, since this does real I/O (see design.md).
+    fn recompute_diff(&mut self) {
+        let change = {
+            let rows = self.rows();
+            self.list_state
+                .selected()
+                .and_then(|i| rows.get(i))
+                .and_then(row_change)
+                .cloned()
+        };
+
+        self.tab = 0;
+        self.expanded.clear();
+
+        self.diff_state = match &change {
+            None => DiffPaneState::NotAChange,
+            Some(change) => match load_diff_state(&self.changes, change) {
+                Ok(state) => state,
+                Err(e) => DiffPaneState::PaneError(e.to_string()),
+            },
+        };
+
+        self.reset_cursor_to_first_selectable();
+    }
+
+    fn current_capability_diff(&self) -> Option<&CapabilityDiff> {
+        match &self.diff_state {
+            DiffPaneState::Loaded(tabs) => tabs.get(self.tab).and_then(|(_, r)| r.as_ref().ok()),
+            _ => None,
+        }
+    }
+
+    fn reset_cursor_to_first_selectable(&mut self) {
+        let rows = self.diff_rows();
+        self.cursor = rows.iter().position(|r| r.is_selectable()).unwrap_or(0);
+        self.line_offset = 0;
+    }
+}
+
+/// Loads every capability the change touches and diffs each one, isolating
+/// failures per capability so one bad load doesn't cost its siblings. Only
+/// the pane-wide steps (resolving the change, opening its views, enumerating
+/// its capabilities) short-circuit the whole change (see design.md).
+fn load_diff_state(changes: &Changes, change: &Change) -> Result<DiffPaneState, ChangesError> {
+    let view = changes.resolve(change)?;
+    let views = changes.views(&view)?;
+    let names = specs::capabilities(&views)?;
+    if names.is_empty() {
+        return Ok(DiffPaneState::NoCapabilities);
+    }
+    let tabs = names
+        .into_iter()
+        .map(|name| {
+            let result = specs::load(&views, &name).map(|pair| diff::diff(&name, &pair));
+            (name, result)
+        })
+        .collect();
+    Ok(DiffPaneState::Loaded(tabs))
+}
+
+fn row_change<'a>(row: &Row<'a>) -> Option<&'a Change> {
+    match row {
+        Row::Active(c) | Row::Archived(c) => Some(c),
+        _ => None,
     }
 }
 
@@ -115,6 +372,28 @@ fn next_selectable(rows: &[Row], current: usize, delta: isize) -> usize {
     new as usize
 }
 
+/// Moves `current` by `delta` rows, skipping any run of non-selectable rows
+/// (group headings, intro/body content, notices). Clamps at the ends rather
+/// than wrapping.
+fn next_selectable_row(rows: &[DiffRow], current: usize, delta: isize) -> usize {
+    let len = rows.len() as isize;
+    if len == 0 {
+        return current;
+    }
+
+    let mut idx = current as isize;
+    loop {
+        let next = idx + delta;
+        if next < 0 || next >= len {
+            return current;
+        }
+        idx = next;
+        if rows[idx as usize].is_selectable() {
+            return idx as usize;
+        }
+    }
+}
+
 fn archived_header_index(rows: &[Row]) -> Option<usize> {
     rows.iter()
         .position(|r| matches!(r, Row::ArchivedHeader { .. }))
@@ -124,6 +403,7 @@ fn archived_header_index(rows: &[Row]) -> Option<usize> {
 mod tests {
     use super::*;
     use crate::changes::Change;
+    use crate::diff::{DiffError, Operation, Piece, RequirementDiff, ScenarioDiff};
     use crossterm::event::KeyModifiers;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -270,5 +550,303 @@ mod tests {
         // Header sits right after active rows; unaffected by whichever archived
         // child was selected before collapsing.
         assert_eq!(archived_header_index(&rows_collapsed), Some(1));
+    }
+
+    // --- right pane: focus routing and key handling ---
+
+    fn unchanged(text: &str) -> Piece {
+        Piece::Unchanged {
+            text: text.to_string(),
+        }
+    }
+
+    fn sample_diff(capability: &str) -> CapabilityDiff {
+        CapabilityDiff {
+            capability: capability.to_string(),
+            requirements: vec![RequirementDiff {
+                name: "Req".to_string(),
+                op: Operation::Added,
+                intro: unchanged("intro"),
+                scenarios: vec![ScenarioDiff {
+                    name: "Scenario".to_string(),
+                    body: unchanged("body"),
+                }],
+            }],
+            errors: vec![],
+        }
+    }
+
+    /// Builds an app whose right pane already holds the given tabs, bypassing
+    /// `recompute_diff`'s filesystem/git access so key-handling tests stay fast
+    /// and self-contained.
+    fn app_with_loaded(tabs: Vec<(&str, CapabilityDiff)>) -> App {
+        app_with_loaded_results(
+            tabs.into_iter()
+                .map(|(name, diff)| (name, Ok(diff)))
+                .collect(),
+        )
+    }
+
+    /// As `app_with_loaded`, but allows individual tabs to be pre-failed, so
+    /// key-handling and rendering-state tests can exercise a mix of sound and
+    /// broken capabilities without touching the filesystem.
+    fn app_with_loaded_results(tabs: Vec<(&str, Result<CapabilityDiff, SpecError>)>) -> App {
+        let mut app = empty_app();
+        app.diff_state = DiffPaneState::Loaded(
+            tabs.into_iter()
+                .map(|(name, result)| (name.to_string(), result))
+                .collect(),
+        );
+        app.tab = 0;
+        app.reset_cursor_to_first_selectable();
+        app
+    }
+
+    #[test]
+    fn moving_left_pane_selection_recomputes_diff_from_a_real_change() {
+        use git2::{Repository, Signature};
+
+        let dir = TempDir::new();
+        let repo = Repository::init(dir.path()).unwrap();
+        let write = |rel: &str, content: &str| {
+            let full = dir.path().join(rel);
+            std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+            std::fs::write(full, content).unwrap();
+        };
+        write(
+            "openspec/changes/add-thing/specs/cap/spec.md",
+            "## ADDED Requirements\n\n### Requirement: New\n#### Scenario: it works\n- **WHEN** a\n- **THEN** b\n",
+        );
+        let mut index = repo.index().unwrap();
+        index
+            .add_path(Path::new("openspec/changes/add-thing/specs/cap/spec.md"))
+            .unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let sig = Signature::now("Test", "test@example.com").unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+
+        let app = App::new(Changes::discover(dir.path()).unwrap());
+        // `App::new` already recomputes for the initial selection (index 0),
+        // which is the one active change we just wrote.
+        match app.pane_view() {
+            PaneView::Tabs { names, .. } => assert_eq!(names, vec!["cap".to_string()]),
+            _ => panic!("expected a loaded tab for the active change"),
+        }
+        let rows = app.diff_rows();
+        assert!(
+            rows.iter()
+                .any(|r| matches!(r, DiffRow::Requirement { name: "New", .. }))
+        );
+    }
+
+    #[test]
+    fn a_change_with_no_delta_specs_yields_no_capabilities_and_no_tabs() {
+        let dir = TempDir::new();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        let full = dir
+            .path()
+            .join("openspec/changes/proposal-only/proposal.md");
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(&full, "x").unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .add_path(Path::new("openspec/changes/proposal-only/proposal.md"))
+            .unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+
+        let app = App::new(Changes::discover(dir.path()).unwrap());
+        assert!(matches!(app.pane_view(), PaneView::NoCapabilities));
+        assert!(app.diff_rows().is_empty());
+    }
+
+    #[test]
+    fn one_capability_failing_to_load_leaves_its_siblings_rendering_normally() {
+        let mut app = app_with_loaded_results(vec![
+            (
+                "bad",
+                Err(SpecError::MissingSpecDocument {
+                    capability: "bad".to_string(),
+                }),
+            ),
+            ("good", Ok(sample_diff("good"))),
+        ]);
+
+        // The first (selected) tab reports its own error and no rows.
+        match app.pane_view() {
+            PaneView::Tabs {
+                names, tab_error, ..
+            } => {
+                assert_eq!(names, vec!["bad".to_string(), "good".to_string()]);
+                assert!(tab_error.is_some());
+            }
+            _ => panic!("expected Tabs, got a pane view for a different state"),
+        }
+        assert!(app.diff_rows().is_empty());
+
+        // Its sibling tab is unaffected and renders its diff normally.
+        app.focus = Focus::Right;
+        app.handle_key(key(KeyCode::Char(']')));
+        match app.pane_view() {
+            PaneView::Tabs { tab_error, .. } => assert!(tab_error.is_none()),
+            _ => panic!("expected Tabs, got a pane view for a different state"),
+        }
+        assert!(
+            app.diff_rows()
+                .iter()
+                .any(|r| matches!(r, DiffRow::Requirement { .. }))
+        );
+    }
+
+    #[test]
+    fn tab_round_trips_focus() {
+        let mut app = empty_app();
+        assert_eq!(app.focus(), Focus::Left);
+        app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.focus(), Focus::Right);
+        app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.focus(), Focus::Left);
+    }
+
+    #[test]
+    fn right_pane_keys_are_inert_while_left_pane_holds_focus() {
+        let mut app = app_with_loaded(vec![("cap", sample_diff("cap"))]);
+        assert_eq!(app.focus(), Focus::Left);
+        let cursor_before = app.cursor;
+        app.handle_key(key(KeyCode::Char('l'))); // expand, if it were routed to the right pane
+        assert_eq!(
+            app.cursor, cursor_before,
+            "right pane cursor must not move while the left pane is focused"
+        );
+        assert!(
+            app.expanded.is_empty(),
+            "right pane collapse state must not change while the left pane is focused"
+        );
+    }
+
+    #[test]
+    fn left_pane_keys_are_inert_while_right_pane_holds_focus() {
+        let mut app = app_with_loaded(vec![("cap", sample_diff("cap"))]);
+        app.focus = Focus::Right;
+        let left_selection_before = app.list_state.selected();
+        app.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(
+            app.list_state.selected(),
+            left_selection_before,
+            "left pane selection must not move while the right pane is focused"
+        );
+    }
+
+    #[test]
+    fn cursor_skips_group_headings_intro_blocks_bodies_and_notices() {
+        let mut diff = sample_diff("cap");
+        diff.errors.push(DiffError::MissingBaseRequirement {
+            capability: "cap".to_string(),
+            requirement: "Ghost".to_string(),
+        });
+        let mut app = app_with_loaded(vec![("cap", diff)]);
+        app.focus = Focus::Right;
+
+        // Expand the requirement and its scenario so Intro and Body rows exist too.
+        app.expanded.insert(RowKey {
+            capability: "cap".to_string(),
+            requirement: "Req".to_string(),
+            scenario: None,
+        });
+        app.expanded.insert(RowKey {
+            capability: "cap".to_string(),
+            requirement: "Req".to_string(),
+            scenario: Some("Scenario".to_string()),
+        });
+        app.reset_cursor_to_first_selectable();
+
+        let rows = app.diff_rows();
+        // Sanity check: the tree actually contains every non-selectable kind under test.
+        assert!(rows.iter().any(|r| matches!(r, DiffRow::Notice(_))));
+        assert!(rows.iter().any(|r| matches!(r, DiffRow::GroupHeading(_))));
+        assert!(rows.iter().any(|r| matches!(r, DiffRow::Intro { .. })));
+        assert!(rows.iter().any(|r| matches!(r, DiffRow::Body { .. })));
+
+        // Cursor starts on the (only) requirement row.
+        assert!(matches!(rows[app.cursor], DiffRow::Requirement { .. }));
+
+        // Moving down skips the Intro row and lands on the Scenario row.
+        app.handle_key(key(KeyCode::Char('j')));
+        let rows = app.diff_rows();
+        assert!(matches!(rows[app.cursor], DiffRow::Scenario { .. }));
+
+        // Moving down again has nowhere selectable to go (only Body follows): clamped.
+        let cursor_before = app.cursor;
+        app.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(app.cursor, cursor_before);
+
+        // Moving up skips the Intro row again and returns to the Requirement row.
+        app.handle_key(key(KeyCode::Char('k')));
+        let rows = app.diff_rows();
+        assert!(matches!(rows[app.cursor], DiffRow::Requirement { .. }));
+
+        // Moving up again has nowhere selectable to go (only the heading/notice precede it).
+        let cursor_before = app.cursor;
+        app.handle_key(key(KeyCode::Char('k')));
+        assert_eq!(app.cursor, cursor_before);
+    }
+
+    #[test]
+    fn tab_selection_stops_at_both_ends() {
+        let mut app = app_with_loaded(vec![
+            ("alpha", sample_diff("alpha")),
+            ("beta", sample_diff("beta")),
+        ]);
+        app.focus = Focus::Right;
+
+        app.handle_key(key(KeyCode::Char('[')));
+        assert_eq!(app.tab, 0, "already at the first tab");
+
+        app.handle_key(key(KeyCode::Char(']')));
+        assert_eq!(app.tab, 1);
+
+        app.handle_key(key(KeyCode::Char(']')));
+        assert_eq!(app.tab, 1, "already at the last tab");
+
+        app.handle_key(key(KeyCode::Char('[')));
+        assert_eq!(app.tab, 0);
+    }
+
+    #[test]
+    fn tab_selection_is_a_no_op_for_a_single_capability() {
+        let mut app = app_with_loaded(vec![("only", sample_diff("only"))]);
+        app.focus = Focus::Right;
+
+        app.handle_key(key(KeyCode::Char(']')));
+        assert_eq!(app.tab, 0);
+        app.handle_key(key(KeyCode::Char('[')));
+        assert_eq!(app.tab, 0);
+    }
+
+    #[test]
+    fn toggle_and_directional_expand_collapse_change_row_state() {
+        let mut app = app_with_loaded(vec![("cap", sample_diff("cap"))]);
+        app.focus = Focus::Right;
+
+        assert!(!matches!(
+            app.diff_rows()[app.cursor].expanded(),
+            Some(true)
+        ));
+
+        app.handle_key(key(KeyCode::Char('l')));
+        assert_eq!(app.diff_rows()[app.cursor].expanded(), Some(true));
+
+        app.handle_key(key(KeyCode::Char('h')));
+        assert_eq!(app.diff_rows()[app.cursor].expanded(), Some(false));
+
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(app.diff_rows()[app.cursor].expanded(), Some(true));
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(app.diff_rows()[app.cursor].expanded(), Some(false));
     }
 }

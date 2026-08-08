@@ -2,11 +2,11 @@ use std::path::{Path, PathBuf};
 
 use git2::Repository;
 
+use super::Fs;
 use super::disk::DiskFs;
 use super::error::FsError;
 use super::git::GitTreeFs;
 use super::git_ref::GitRef;
-use super::Fs;
 
 pub struct Workspace {
     repo: Option<Repository>,

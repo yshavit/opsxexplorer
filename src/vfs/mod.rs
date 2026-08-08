@@ -206,10 +206,7 @@ mod tests {
             view.read(Path::new("tracked.txt")).unwrap(),
             b"v2-uncommitted"
         );
-        assert_eq!(
-            view.read(Path::new("untracked.txt")).unwrap(),
-            b"untracked"
-        );
+        assert_eq!(view.read(Path::new("untracked.txt")).unwrap(), b"untracked");
         assert_eq!(
             view.read(Path::new("ignored.txt")).unwrap(),
             b"ignored-content"
@@ -295,7 +292,10 @@ mod tests {
         let result = view.read(Path::new("link.txt"));
         assert!(matches!(
             result,
-            Err(FsError::Unsupported { reason: "symlink", .. })
+            Err(FsError::Unsupported {
+                reason: "symlink",
+                ..
+            })
         ));
     }
 }

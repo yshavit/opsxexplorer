@@ -1,17 +1,9 @@
-# tui Specification
+## RENAMED Requirements
 
-## Purpose
+- FROM: `### Requirement: Left pane holds input focus`
+- TO: `### Requirement: Focus moves between the two panes`
 
-Defines opsxexplorer's overall terminal UI shell: the two-pane layout that every other screen renders into, and where keyboard focus starts.
-
-## Requirements
-
-### Requirement: Two-pane layout
-The system SHALL render its terminal UI as two side-by-side panes: a left pane and a right pane.
-
-#### Scenario: application launches
-- **WHEN** the application starts
-- **THEN** the screen is split into a left pane and a right pane
+## MODIFIED Requirements
 
 ### Requirement: Focus moves between the two panes
 Exactly one pane SHALL hold keyboard input focus at any time. The left pane SHALL hold focus when the application starts. The system SHALL move focus to the other pane when the user presses Tab, and SHALL indicate which pane currently holds focus visually. A key pressed while a pane holds focus SHALL be handled by that pane, except for keys the application handles globally.
@@ -36,20 +28,9 @@ Exactly one pane SHALL hold keyboard input focus at any time. The left pane SHAL
 - **WHEN** the user presses a key the application handles globally, whichever pane holds focus
 - **THEN** it takes effect regardless of which pane is focused
 
-### Requirement: Ctrl+Q exits the application
-The system SHALL exit when the user presses Ctrl+Q.
+## REMOVED Requirements
 
-#### Scenario: user presses Ctrl+Q
-- **WHEN** the user presses Ctrl+Q while the application is running
-- **THEN** the application exits
+### Requirement: Right pane is a placeholder
+**Reason**: The right pane now renders the selected change's spec diff — the capability the tool exists to provide. This requirement forbade exactly that ("It SHALL NOT display change contents, diffs, or any other content"); it was scaffolding for the initial two-pane shell, not intended behaviour.
 
-### Requirement: Terminal state is restored on exit
-The system SHALL restore the terminal to its prior state (leaving raw mode and the alternate screen) whenever it exits, whether by normal quit or by an unexpected panic.
-
-#### Scenario: normal exit restores terminal
-- **WHEN** the user quits the application via Ctrl+Q
-- **THEN** the terminal returns to its normal, non-raw, non-alternate-screen state
-
-#### Scenario: panic restores terminal
-- **WHEN** the application panics while running
-- **THEN** the terminal is still restored to its normal state before the process exits
+**Migration**: None — nothing depends on the pane being empty. The right pane's behaviour is now specified by the `tui-specdiff` capability.
