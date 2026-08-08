@@ -9,6 +9,26 @@
 > output of an exploration session; the decisions in it were made deliberately
 > and should be carried into the proposal.
 
+**Superseded.** This brief has been carried into the change at
+`openspec/changes/spec-diff/` (proposal.md, specs/, design.md, tasks.md), which
+is now the source of truth. Once that change is archived this file gets reduced
+to a pointer at its archive path, as `01-spec-model.md` already has been.
+
+Two things below were reconsidered while writing the change, and the change's
+artifacts win:
+
+- The claim under "Decision: render the ambiguity as a third state" that
+  **deliberately deleting a requirement's intro is "not merely ambiguous — it is
+  invisible"** is wrong, and its framing worse. OpenSpec defines no operation for
+  removing an intro, and the sync skill's canonical MODIFIED example has no intro
+  at all — an empty intro is the *normal* form, not a deletion gesture. So there
+  is no deletion being lost. An emptied intro yields `Unmentioned` exactly as a
+  base-only scenario does: same state, equally visible. See design.md.
+- **RENAMED**, which this brief left open, is a first-class operation, emitted
+  once, with the base looked up under the former name — and a delta that renames
+  a requirement *and* modifies it under the new name folds into that single
+  entry rather than erroring or appearing twice.
+
 ## Project context
 
 opsxexplorer is a terminal UI (Rust 2024, ratatui) for browsing OpenSpec changes
