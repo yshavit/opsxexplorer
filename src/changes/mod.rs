@@ -6,6 +6,19 @@ mod history;
 pub use change::{Change, ChangeView, DiffBase};
 pub use error::ChangesError;
 
+/// Both views needed to diff a change: `live` always holds the change's own
+/// delta specs (the live working tree), and `base` holds the spec of record
+/// at the change's resolved diff base. `change` identifies which change this
+/// pair belongs to, so a consumer can resolve `<change>/specs/` on `live`
+/// without a second parameter — both `live` and `base` are full-repo-rooted
+/// `Fs` views (required so `base` can reach `openspec/specs/<cap>/spec.md`,
+/// outside the change directory), so neither view alone carries that path.
+pub struct ChangeViews<'a> {
+    pub live: Fs<'a>,
+    pub base: Fs<'a>,
+    pub change: Change,
+}
+
 use std::path::Path;
 
 use git2::Repository;
@@ -48,6 +61,18 @@ impl Changes {
     }
 
     pub fn open<'a>(&'a self, view: &ChangeView) -> Result<Fs<'a>, FsError> {
+        self.resolve_base(view)
+    }
+
+    pub fn views<'a>(&'a self, view: &ChangeView) -> Result<ChangeViews<'a>, FsError> {
+        Ok(ChangeViews {
+            live: self.vfs.current(),
+            base: self.resolve_base(view)?,
+            change: view.change.clone(),
+        })
+    }
+
+    fn resolve_base<'a>(&'a self, view: &ChangeView) -> Result<Fs<'a>, FsError> {
         match view.diff_base {
             DiffBase::Current => Ok(self.vfs.current()),
             DiffBase::At(r) => self.vfs.at(&r),
@@ -320,6 +345,147 @@ mod tests {
             let fs = changes.open(v).unwrap();
             assert_eq!(
                 fs.read(Path::new("openspec/specs/cap/spec.md")).unwrap(),
+                b"v1"
+            );
+        }
+    }
+
+    #[test]
+    fn views_exposes_live_delta_and_base_spec_of_record_for_archived_change() {
+        let dir = TempDir::new("views-archived");
+        let repo = Repository::init(dir.path()).unwrap();
+
+        write_file(dir.path(), "openspec/specs/cap/spec.md", "v1");
+        stage_and_commit(&repo, "spec v1", &["openspec/specs/cap/spec.md"]);
+
+        // The archiving commit introduces the change directory (with its own
+        // delta spec) and edits the spec of record in the same commit.
+        write_file(
+            dir.path(),
+            "openspec/changes/archive/2026-01-01-old-thing/proposal.md",
+            "x",
+        );
+        write_file(
+            dir.path(),
+            "openspec/changes/archive/2026-01-01-old-thing/specs/cap/spec.md",
+            "delta",
+        );
+        write_file(dir.path(), "openspec/specs/cap/spec.md", "v2-archived-with");
+        stage_and_commit(
+            &repo,
+            "archive old-thing",
+            &[
+                "openspec/changes/archive/2026-01-01-old-thing/proposal.md",
+                "openspec/changes/archive/2026-01-01-old-thing/specs/cap/spec.md",
+                "openspec/specs/cap/spec.md",
+            ],
+        );
+
+        let changes = Changes::discover(dir.path()).unwrap();
+        let change = changes.archived[0].clone();
+        let view = changes.resolve(&change).unwrap();
+
+        let views = changes.views(&view).unwrap();
+
+        // The change's own delta spec is readable through the live view...
+        assert_eq!(
+            views
+                .live
+                .read(Path::new(
+                    "openspec/changes/archive/2026-01-01-old-thing/specs/cap/spec.md"
+                ))
+                .unwrap(),
+            b"delta"
+        );
+        // ...but absent from the base view, whose diff base predates the change directory.
+        assert!(matches!(
+            views.base.read(Path::new(
+                "openspec/changes/archive/2026-01-01-old-thing/specs/cap/spec.md"
+            )),
+            Err(FsError::NotFound(_))
+        ));
+        // The spec of record read through the base view is its state at the
+        // resolved diff base, not its current state.
+        assert_eq!(
+            views
+                .base
+                .read(Path::new("openspec/specs/cap/spec.md"))
+                .unwrap(),
+            b"v1"
+        );
+    }
+
+    #[test]
+    fn views_are_both_live_for_active_change() {
+        let dir = TempDir::new("views-active");
+        let repo = Repository::init(dir.path()).unwrap();
+        write_file(dir.path(), "openspec/changes/add-thing/proposal.md", "x");
+        write_file(dir.path(), "openspec/specs/cap/spec.md", "v1");
+        stage_and_commit(
+            &repo,
+            "initial",
+            &[
+                "openspec/changes/add-thing/proposal.md",
+                "openspec/specs/cap/spec.md",
+            ],
+        );
+
+        // Uncommitted edit to the spec of record.
+        write_file(dir.path(), "openspec/specs/cap/spec.md", "v2-uncommitted");
+
+        let changes = Changes::discover(dir.path()).unwrap();
+        let change = changes.active[0].clone();
+        let view = changes.resolve(&change).unwrap();
+        let views = changes.views(&view).unwrap();
+
+        assert_eq!(
+            views
+                .live
+                .read(Path::new("openspec/specs/cap/spec.md"))
+                .unwrap(),
+            b"v2-uncommitted"
+        );
+        assert_eq!(
+            views
+                .base
+                .read(Path::new("openspec/specs/cap/spec.md"))
+                .unwrap(),
+            b"v2-uncommitted"
+        );
+    }
+
+    #[test]
+    fn views_travels_without_relookup_of_status() {
+        let dir = TempDir::new("views-travels");
+        let repo = Repository::init(dir.path()).unwrap();
+
+        write_file(dir.path(), "openspec/specs/cap/spec.md", "v1");
+        stage_and_commit(&repo, "spec v1", &["openspec/specs/cap/spec.md"]);
+        write_file(
+            dir.path(),
+            "openspec/changes/archive/2026-01-01-old-thing/proposal.md",
+            "x",
+        );
+        stage_and_commit(
+            &repo,
+            "archive old-thing",
+            &["openspec/changes/archive/2026-01-01-old-thing/proposal.md"],
+        );
+
+        let changes = Changes::discover(dir.path()).unwrap();
+        let change = changes.archived[0].clone();
+        let view = changes.resolve(&change).unwrap();
+
+        // Held across two simulated "frames" with no re-lookup of active/archived status.
+        let held = view.clone();
+
+        for v in [&view, &held] {
+            let views = changes.views(v).unwrap();
+            assert_eq!(
+                views
+                    .base
+                    .read(Path::new("openspec/specs/cap/spec.md"))
+                    .unwrap(),
                 b"v1"
             );
         }

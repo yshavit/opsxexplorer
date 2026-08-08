@@ -36,7 +36,18 @@ Existing TUI:
 
 Change 2 supplies, per change + capability: requirement entries ordered ADDED →
 MODIFIED → REMOVED, each with an intro block and scenarios, where changed blocks
-carry word-level `Equal`/`Delete`/`Insert` runs over faithful source text.
+carry word-level `Equal`/`Delete`/`Insert` runs over the body text change 1
+produced.
+
+> **Updated after change 1 was specified.** This originally said "over faithful
+> source text." Change 1's bodies are `mdq`'s re-serialisation of the parsed
+> markdown tree, not the file's bytes: no content is lost and nothing is
+> re-wrapped, but bullet markers, emphasis characters and escaping may differ
+> from what is on disk. The right pane therefore cannot claim to be showing the
+> file verbatim, and diff-run offsets do not map back onto it. Change 1 also
+> guarantees that both sides are normalised identically, and that capability
+> enumeration is alphabetically stable — the property the tab bar below relies
+> on.
 
 ## Decisions already made
 
@@ -87,10 +98,19 @@ Wrapping is the hard part of this change:
 `tui-markdown` (already a dependency, unused) strips the `**` from `**WHEN**`,
 so character offsets from change 2's diff runs no longer map onto rendered
 spans. **You cannot have both styled markdown and word-level highlighting in a
-diffed region.** Pick one and say so. Recommend: render source text throughout,
-so the same content looks the same whether or not it happens to be inside a
-changed block. A scheme where unchanged blocks render as pretty markdown and
-changed blocks render as raw source is visually incoherent.
+diffed region.** Pick one and say so. Recommend: render change 1's body text
+throughout, so the same content looks the same whether or not it happens to be
+inside a changed block. A scheme where unchanged blocks render as pretty
+markdown and changed blocks render as raw text is visually incoherent.
+
+> **One supporting argument weakened after change 1 was specified.** The
+> recommendation stands, but "render source text" is no longer literally
+> available — change 1's bodies are re-serialised, so the pane is not
+> byte-identical to the file under *either* option. The choice is now between
+> two normalised renderings rather than between the file's own bytes and a
+> prettified version. The reason to pick one uniformly (visual coherence) is
+> untouched; the reason that used to make "raw source" feel like the honest
+> default no longer applies.
 
 ### Tree shape: group headers *and* gutter markers
 
@@ -167,7 +187,22 @@ the feature renders. It is its own end-to-end test fixture.
   pane's horizontal one.
 - **Error and empty states**, rendered in-pane rather than crashing: a change
   with no `specs/` directory; a MODIFIED requirement naming something absent
-  from the base spec; a malformed delta file.
+  from the base spec; a malformed delta file. Change 1's error vocabulary, now
+  settled, is `MissingSpecDocument` (an enumerated capability with no spec.md),
+  `MissingBaseSpec` (a MODIFIED/REMOVED entry with no spec of record at all),
+  `Markdown` (the file is not parseable markdown) and `Structure` (a stray
+  scenario, an unrecognised `## <OP> Requirements` section, a `FROM:` with no
+  `TO:`). Two properties of it shape this pane:
+  - **Failures are isolated per capability.** A malformed delta in one
+    capability must render as an error *inside that tab* while the change's
+    other tabs still display normally — change 1 loads one capability per call
+    specifically so this is true. Do not let one bad capability blank the pane.
+  - **Errors carry a structural location, not a line number.** `mdq` drops
+    source positions, so an error identifies itself as e.g. *under
+    `## MODIFIED Requirements`, requirement "Change discovery"* — there is no
+    "line 42" to show, and the pane should not imply one.
+- A change with no `specs/` directory is **not** an error: change 1 returns an
+  empty capability list, so this renders as "no spec changes" with no tab bar.
 - **Recomputation cost.** Diffs are recomputed on selection change. At this
   repo's scale that is trivially fine; say so rather than caching pre-emptively
   (consistent with the existing decision to recompute `max_scroll` every render).

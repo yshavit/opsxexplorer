@@ -71,9 +71,23 @@ The general rule, applied uniformly:
 > **Absence in the delta means "unmentioned". Presence means "authoritative for
 > that piece."**
 
-This also settles the omitted-intro case: a MODIFIED entry with no intro block
-yields an `Unmentioned` intro (show the base's intro as context), *not* an intro
-diffed against empty (which would render the whole paragraph as deleted).
+This also settles the omitted-intro case: a MODIFIED entry with **an empty intro
+block** yields an `Unmentioned` intro (show the base's intro as context), *not*
+an intro diffed against empty (which would render the whole paragraph as
+deleted).
+
+> **Trigger reworded after change 1 was specified.** This originally said "with
+> no intro block." Change 1 cannot distinguish an omitted intro from an empty
+> one — markdown has no way to express the difference — so both arrive as an
+> empty string, and the rule keys off emptiness. The consequence is worth
+> stating outright rather than leaving to be discovered: **deliberately deleting
+> a requirement's intro is inexpressible.** An author who empties an intro in a
+> MODIFIED entry gets `Unmentioned`, i.e. the base's intro shown as unchanged
+> context. That is the correct behaviour under this brief's own "absence means
+> unmentioned" rule, and it is consistent with OpenSpec having no delta
+> operation for removing a sub-part of a requirement (the same reason a dropped
+> scenario is unexpressible), but it does mean the deletion is not merely
+> ambiguous — it is invisible.
 
 Why this is the right call rather than a hedge: when an author does restate the
 requirement in full, there are no base-only scenarios, so the model collapses
@@ -111,6 +125,21 @@ A MODIFIED or REMOVED entry naming a requirement that does not exist in the base
 spec is a real failure mode (typo in the header, or a rename done by hand). It
 must surface as a displayable error, not a panic and not a silent skip.
 
+> **Split of responsibility, settled in change 1.** There are two distinct
+> versions of "no base to modify," and they have different owners:
+>
+> - **The base spec file does not exist at all.** Change 1 owns this and raises
+>   `MissingBaseSpec { capability, requirement }` at load time, before change 2
+>   ever runs. An all-ADDED delta against an absent base is *not* an error (real
+>   case: `2026-08-07-tui-initial`); only a MODIFIED or REMOVED entry makes it
+>   one.
+> - **The base spec exists but does not contain that requirement.** This one is
+>   change 2's, and is the case described above.
+>
+> Change 2 should not re-implement the first check. Keeping them separate is
+> deliberate: a whole missing spec of record and a single mistyped requirement
+> name are different authoring mistakes and deserve different messages.
+
 ### Inside a MODIFIED requirement
 
 Requirements and scenarios are matched **by name** — the text after
@@ -145,9 +174,21 @@ intended tool.
 
 Two consequences to record in design.md:
 
-- **Run boundaries must be expressible as offsets into faithful source text**,
-  because change 3 has to word-wrap the runs across pane width while preserving
-  their styling. Do not normalise whitespace or strip markdown here.
+- **Run boundaries must be expressible as offsets into the body text change 1
+  supplies**, because change 3 has to word-wrap the runs across pane width while
+  preserving their styling. Change 2 must not normalise whitespace or strip
+  markdown *further* — it diffs the strings it is given, unmodified.
+
+  > **Updated after change 1 was specified.** This originally read "offsets into
+  > faithful source text." Change 1 no longer supplies byte-faithful source: its
+  > bodies are `mdq`'s re-serialisation of the parsed markdown tree — no content
+  > lost and no re-wrapping, but bullet markers, emphasis characters and
+  > escaping may differ from the file. Offsets are therefore into *that* string,
+  > and neither change 2 nor change 3 can map them back onto the file's bytes.
+  > What change 1 does now guarantee, as a spec requirement, is that **both
+  > sides receive identical normalisation** — which is precisely the property
+  > the `Unchanged` determinations below rely on, and which byte-faithfulness
+  > was only ever an indirect way of getting.
 - **Word-diff and markdown rendering are mutually exclusive in diffed regions.**
   `tui-markdown` strips the `**` from `**WHEN**`, so offsets computed here no
   longer map onto rendered spans. Change 3 will have to choose; this layer
