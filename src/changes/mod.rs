@@ -69,10 +69,6 @@ impl Changes {
         })
     }
 
-    pub fn open<'a>(&'a self, view: &ChangeView) -> Result<Fs<'a>, FsError> {
-        self.resolve_base(view)
-    }
-
     pub fn views<'a>(&'a self, view: &ChangeView) -> Result<ChangeViews<'a>, FsError> {
         Ok(ChangeViews {
             live: self.vfs.current(),
@@ -232,9 +228,12 @@ mod tests {
         let view = changes.resolve(&change).unwrap();
         assert_eq!(view.diff_base, DiffBase::Current);
 
-        let fs = changes.open(&view).unwrap();
+        let views = changes.views(&view).unwrap();
         assert_eq!(
-            fs.read(Path::new("openspec/specs/cap/spec.md")).unwrap(),
+            views
+                .base
+                .read(Path::new("openspec/specs/cap/spec.md"))
+                .unwrap(),
             b"v2-uncommitted"
         );
     }
@@ -267,9 +266,12 @@ mod tests {
         let change = changes.archived[0].clone();
         let view = changes.resolve(&change).unwrap();
 
-        let fs = changes.open(&view).unwrap();
+        let views = changes.views(&view).unwrap();
         assert_eq!(
-            fs.read(Path::new("openspec/specs/cap/spec.md")).unwrap(),
+            views
+                .base
+                .read(Path::new("openspec/specs/cap/spec.md"))
+                .unwrap(),
             b"v1"
         );
     }
@@ -319,9 +321,12 @@ mod tests {
         let change = changes.archived[0].clone();
         let view = changes.resolve(&change).unwrap();
 
-        let fs = changes.open(&view).unwrap();
+        let views = changes.views(&view).unwrap();
         assert_eq!(
-            fs.read(Path::new("openspec/specs/cap/spec.md")).unwrap(),
+            views
+                .base
+                .read(Path::new("openspec/specs/cap/spec.md"))
+                .unwrap(),
             b"v1"
         );
     }
@@ -352,9 +357,12 @@ mod tests {
         let change = changes.archived[0].clone();
         let view = changes.resolve(&change).unwrap();
 
-        let fs = changes.open(&view).unwrap();
+        let views = changes.views(&view).unwrap();
         assert_eq!(
-            fs.read(Path::new("openspec/specs/cap/spec.md")).unwrap(),
+            views
+                .base
+                .read(Path::new("openspec/specs/cap/spec.md"))
+                .unwrap(),
             b"v1"
         );
     }
@@ -385,9 +393,12 @@ mod tests {
         let held = view.clone();
 
         for v in [&view, &held] {
-            let fs = changes.open(v).unwrap();
+            let views = changes.views(v).unwrap();
             assert_eq!(
-                fs.read(Path::new("openspec/specs/cap/spec.md")).unwrap(),
+                views
+                    .base
+                    .read(Path::new("openspec/specs/cap/spec.md"))
+                    .unwrap(),
                 b"v1"
             );
         }

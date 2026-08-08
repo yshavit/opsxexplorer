@@ -73,6 +73,14 @@ mod test_support {
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    use super::GitRef;
+
+    pub fn head_ref(repo: &Repository) -> GitRef {
+        GitRef {
+            oid: repo.head().unwrap().peel_to_commit().unwrap().id(),
+        }
+    }
+
     pub struct TempDir(PathBuf);
 
     impl TempDir {
@@ -153,7 +161,13 @@ mod tests {
         let view = workspace.current();
 
         assert_eq!(view.read(Path::new("readme.md")).unwrap(), b"hello");
-        assert!(workspace.resolve("HEAD").is_err());
+        let dummy_ref = GitRef {
+            oid: git2::Oid::ZERO_SHA1,
+        };
+        assert!(matches!(
+            workspace.at(&dummy_ref),
+            Err(FsError::NotAGitRepo)
+        ));
     }
 
     #[test]
@@ -221,7 +235,7 @@ mod tests {
         stage_and_commit(&repo, "v1", &["file.txt"]);
 
         let workspace = Workspace::open(dir.path()).unwrap();
-        let v1_ref = workspace.resolve("HEAD").unwrap();
+        let v1_ref = head_ref(&repo);
 
         write_file(dir.path(), "file.txt", "v2-uncommitted");
 
@@ -243,7 +257,7 @@ mod tests {
         stage_and_commit(&repo, "v1", &["file.txt"]);
 
         let workspace = Workspace::open(dir.path()).unwrap();
-        let pinned = workspace.resolve("HEAD").unwrap();
+        let pinned = head_ref(&repo);
 
         write_file(dir.path(), "file.txt", "v2");
         stage_and_commit(&repo, "v2", &["file.txt"]);
@@ -252,8 +266,8 @@ mod tests {
         let pinned_view = workspace.at(&pinned).unwrap();
         assert_eq!(pinned_view.read(Path::new("file.txt")).unwrap(), b"v1");
 
-        let head_ref = workspace.resolve("HEAD").unwrap();
-        let head_view = workspace.at(&head_ref).unwrap();
+        let moved_ref = head_ref(&repo);
+        let head_view = workspace.at(&moved_ref).unwrap();
         assert_eq!(head_view.read(Path::new("file.txt")).unwrap(), b"v2");
     }
 
@@ -266,7 +280,7 @@ mod tests {
         stage_and_commit(&repo, "initial", &["dir/a.txt", "dir/b.txt"]);
 
         let workspace = Workspace::open(dir.path()).unwrap();
-        let r = workspace.resolve("HEAD").unwrap();
+        let r = head_ref(&repo);
         let view = workspace.at(&r).unwrap();
 
         let entries = view.list_dir(Path::new("dir")).unwrap();
@@ -286,7 +300,7 @@ mod tests {
         stage_and_commit(&repo, "initial", &["target.txt", "link.txt"]);
 
         let workspace = Workspace::open(dir.path()).unwrap();
-        let r = workspace.resolve("HEAD").unwrap();
+        let r = head_ref(&repo);
         let view = workspace.at(&r).unwrap();
 
         let result = view.read(Path::new("link.txt"));

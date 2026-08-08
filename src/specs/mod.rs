@@ -3,6 +3,6 @@ mod load;
 mod model;
 pub(crate) mod parse;
 
-pub use error::{Location, SpecError, StructureErrorKind};
+pub use error::SpecError;
 pub use load::{capabilities, load};
-pub use model::{Delta, DeltaEntry, DeltaOp, Rename, Requirement, Scenario, Spec, SpecPair};
+pub use model::{DeltaEntry, DeltaOp, Requirement, SpecPair};

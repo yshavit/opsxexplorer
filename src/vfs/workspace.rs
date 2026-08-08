@@ -41,9 +41,4 @@ impl Workspace {
         let repo = self.repo.as_ref().ok_or(FsError::NotAGitRepo)?;
         Ok(Fs::Git(GitTreeFs::new(repo, r.oid)))
     }
-
-    pub fn resolve(&self, revspec: &str) -> Result<GitRef, FsError> {
-        let repo = self.repo.as_ref().ok_or(FsError::NotAGitRepo)?;
-        GitRef::resolve(repo, revspec)
-    }
 }
