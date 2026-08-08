@@ -396,9 +396,17 @@ mod tests {
             &std::fs::read_to_string("openspec/specs/tui/spec.md").unwrap(),
         )
         .unwrap();
-        assert_eq!(spec.requirements.len(), 5);
+        assert_eq!(
+            req_names(&spec.requirements),
+            vec![
+                "Two-pane layout",
+                "Focus moves between the two panes",
+                "q exits the application",
+                "Terminal state is restored on exit",
+            ]
+        );
         let total_scenarios: usize = spec.requirements.iter().map(|r| r.scenarios.len()).sum();
-        assert_eq!(total_scenarios, 7);
+        assert_eq!(total_scenarios, 9);
     }
 
     #[test]
@@ -408,9 +416,24 @@ mod tests {
             &std::fs::read_to_string("openspec/specs/tui-changelist/spec.md").unwrap(),
         )
         .unwrap();
-        assert_eq!(spec.requirements.len(), 10);
+        assert_eq!(
+            req_names(&spec.requirements),
+            vec![
+                "Active changes listed first, alphabetically",
+                "Archived changes are grouped under a collapsible section",
+                "Archived changes sorted alphabetically, displayed with date",
+                "Single cursor navigable over active, archived-header, and archived rows",
+                "Archived section toggles when its header is selected",
+                "Selecting a change moves focus to the right pane",
+                "Collapsing returns the cursor to the archived header",
+                "Empty sections show placeholder text",
+                "Left pane scrolls horizontally as a single unit",
+                "Horizontal scroll position is indicated with a scrollbar",
+                "Horizontal scroll offset persists across selection and section toggling, clamped to current content",
+            ]
+        );
         let total_scenarios: usize = spec.requirements.iter().map(|r| r.scenarios.len()).sum();
-        assert_eq!(total_scenarios, 34);
+        assert_eq!(total_scenarios, 44);
     }
 
     #[test]
