@@ -1,0 +1,75 @@
+/// A single scenario within a requirement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Scenario {
+    pub name: String,
+    pub body: String,
+}
+
+/// A requirement, as parsed from either a spec of record or a delta spec.
+///
+/// `intro` is a plain `String`, not `Option<String>`: a requirement with no
+/// intro block and one with an empty intro block are indistinguishable in
+/// the source (the only textual difference is a blank line, which carries
+/// no authorial intent), so both parse to `""`. See design.md.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Requirement {
+    pub name: String,
+    pub intro: String,
+    pub scenarios: Vec<Scenario>,
+}
+
+/// A capability's spec of record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Spec {
+    pub purpose: Option<String>,
+    pub requirements: Vec<Requirement>,
+}
+
+/// The operation section a delta requirement was parsed from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeltaOp {
+    Added,
+    Modified,
+    Removed,
+}
+
+/// A requirement tagged with the delta operation it was parsed from.
+///
+/// A `Removed` entry is a `DeltaEntry` like any other, just with an empty
+/// `intro` and `scenarios: []` — a removal is genuinely a requirement
+/// identified by name, and its body is recovered from the base. See design.md.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeltaEntry {
+    pub op: DeltaOp,
+    pub requirement: Requirement,
+}
+
+/// A RENAMED entry: a pairing of the name a requirement is renamed from to
+/// the name it is renamed to. Kept as a separate list rather than a
+/// `DeltaOp` variant, since it has no heading, body, or intro of its own —
+/// folding it into `DeltaEntry` would leave those fields meaningless. See
+/// design.md.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rename {
+    pub from: String,
+    pub to: String,
+}
+
+/// A change's delta spec for one capability.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Delta {
+    pub purpose: Option<String>,
+    pub entries: Vec<DeltaEntry>,
+    pub renames: Vec<Rename>,
+}
+
+/// Both sides of a change-and-capability pair, as loaded by [`crate::specs::load`].
+///
+/// `base` is `None` when the delta introduces a capability with no spec of
+/// record yet at the diff base (an all-ADDED delta). Every other case where
+/// a base is required but absent is a [`crate::specs::SpecError::MissingBaseSpec`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpecPair {
+    pub delta: Delta,
+    pub base: Option<Spec>,
+}
