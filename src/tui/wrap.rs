@@ -141,7 +141,7 @@ fn finish_token(chars: Vec<(char, Style)>, class: CharClass) -> Token {
 }
 
 /// Merges adjacent same-styled characters back into spans.
-fn chars_to_spans(chars: Vec<(char, Style)>) -> Vec<Span<'static>> {
+pub(crate) fn chars_to_spans(chars: Vec<(char, Style)>) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     let mut current: Option<(String, Style)> = None;
     for (c, style) in chars {

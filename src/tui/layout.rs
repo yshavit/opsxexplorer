@@ -6,7 +6,7 @@ use ratatui::text::{Line, Span};
 use crate::diff::{Operation, Piece, Run};
 
 use super::diff_row::DiffRow;
-use super::wrap::wrap_spans;
+use super::wrap::{chars_to_spans, wrap_spans};
 
 /// Width, in columns, of the gutter column: one marker character plus one
 /// column of separating space.
@@ -111,6 +111,13 @@ fn modified_style() -> Style {
     Style::new().fg(Color::Yellow)
 }
 
+/// The style for a scenario body's `WHEN`/`THEN` bullet keyword, layered on
+/// top of whatever style the keyword's characters already carry (e.g. a
+/// word-diff run's color) rather than replacing it.
+fn when_then_style() -> Style {
+    Style::new().add_modifier(Modifier::BOLD)
+}
+
 fn content_spans(row: &DiffRow) -> Vec<Span<'static>> {
     match row {
         DiffRow::GroupHeading(op) => {
@@ -164,7 +171,7 @@ fn content_spans(row: &DiffRow) -> Vec<Span<'static>> {
                 Span::raw((*name).to_string()),
             ]
         }
-        DiffRow::Body { piece } => piece_spans(piece),
+        DiffRow::Body { piece } => style_when_then(piece_spans(piece)),
         DiffRow::Notice(text) => vec![Span::styled(text.clone(), Style::new().fg(Color::Red))],
     }
 }
@@ -217,6 +224,63 @@ fn changed_spans(base: &str, delta: &str, runs: &[Run]) -> Vec<Span<'static>> {
 
 fn slice(s: &str, range: &Range<usize>) -> String {
     s.get(range.clone()).unwrap_or("").to_string()
+}
+
+/// Rewrites a scenario body's leading `- **WHEN**` / `- **THEN**` bullet
+/// keyword from its markdown-bold source form into a de-asterisked, styled
+/// keyword, matched at the start of each line on the row's flattened
+/// character stream so a keyword split across spans by word-diff
+/// highlighting is still caught. Every other character keeps its original
+/// style; the keyword's characters layer `when_then_style()` on top of
+/// theirs rather than replacing it (see design.md).
+fn style_when_then(spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
+    let chars: Vec<(char, Style)> = spans
+        .into_iter()
+        .flat_map(|span| {
+            let style = span.style;
+            span.content
+                .chars()
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(move |c| (c, style))
+        })
+        .collect();
+
+    let mut out: Vec<(char, Style)> = Vec::with_capacity(chars.len());
+    let mut i = 0;
+    let mut at_line_start = true;
+    while i < chars.len() {
+        if at_line_start && let Some(keyword) = bullet_keyword(&chars[i..]) {
+            out.push(chars[i]); // "-"
+            out.push(chars[i + 1]); // " "
+            for (k, kc) in keyword.chars().enumerate() {
+                let (_, style) = chars[i + 4 + k];
+                out.push((kc, style.patch(when_then_style())));
+            }
+            i += 10; // "- **WHEN**" / "- **THEN**"
+            at_line_start = false;
+            continue;
+        }
+        let (c, style) = chars[i];
+        out.push((c, style));
+        at_line_start = c == '\n';
+        i += 1;
+    }
+
+    chars_to_spans(out)
+}
+
+/// Returns `"WHEN"` or `"THEN"` if `chars` opens with the literal bullet
+/// `- **WHEN**` / `- **THEN**`, matched on character content alone (the
+/// styles of the individual characters don't matter for the match).
+fn bullet_keyword(chars: &[(char, Style)]) -> Option<&'static str> {
+    for keyword in ["WHEN", "THEN"] {
+        let pattern: Vec<char> = format!("- **{keyword}**").chars().collect();
+        if chars.len() >= pattern.len() && chars.iter().zip(&pattern).all(|(&(c, _), &p)| c == p) {
+            return Some(keyword);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -470,5 +534,97 @@ mod tests {
             .expect("expected a span exactly matching the new name");
         assert!(!new_name.style.add_modifier.contains(Modifier::DIM));
         assert_ne!(new_name.style, modified_style());
+    }
+
+    #[test]
+    fn when_then_bullets_lose_their_asterisks_and_gain_bold() {
+        let piece = Piece::Unchanged {
+            text: "- **WHEN** a\n- **THEN** b".to_string(),
+        };
+        let row = DiffRow::Body { piece: &piece };
+        let spans = content_spans(&row);
+
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "- WHEN a\n- THEN b");
+        assert!(!text.contains('*'));
+
+        let when = spans
+            .iter()
+            .find(|s| s.content.as_ref() == "WHEN")
+            .expect("expected a span exactly matching WHEN");
+        assert!(when.style.add_modifier.contains(Modifier::BOLD));
+
+        let then = spans
+            .iter()
+            .find(|s| s.content.as_ref() == "THEN")
+            .expect("expected a span exactly matching THEN");
+        assert!(then.style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn when_then_styling_survives_word_level_diff_highlighting() {
+        let runs = vec![
+            Run::Equal {
+                base: 0..11,
+                delta: 0..11,
+            },
+            Run::Delete { base: 11..12 },
+            Run::Insert { delta: 11..12 },
+            Run::Equal {
+                base: 12..25,
+                delta: 12..25,
+            },
+        ];
+        let base = "- **WHEN** a\n- **THEN** b";
+        let delta = "- **WHEN** x\n- **THEN** b";
+        let piece = Piece::Changed {
+            base: base.to_string(),
+            delta: delta.to_string(),
+            runs,
+        };
+        let row = DiffRow::Body { piece: &piece };
+        let spans = content_spans(&row);
+
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        // Both sides of the word-level diff are visible: the deleted "a"
+        // and the inserted "x" that replaced it.
+        assert_eq!(text, "- WHEN ax\n- THEN b");
+
+        // The inserted "x" that replaced "a" keeps the diff's insertion
+        // color, unaffected by the keyword rewrite elsewhere in the row.
+        let inserted = spans
+            .iter()
+            .find(|s| s.content.as_ref() == "x")
+            .expect("expected a span exactly matching the inserted character");
+        assert_eq!(inserted.style, added_style());
+
+        // The WHEN/THEN keywords are still de-asterisked and bold.
+        let when = spans
+            .iter()
+            .find(|s| s.content.as_ref() == "WHEN")
+            .expect("expected a span exactly matching WHEN");
+        assert!(when.style.add_modifier.contains(Modifier::BOLD));
+        let then = spans
+            .iter()
+            .find(|s| s.content.as_ref() == "THEN")
+            .expect("expected a span exactly matching THEN");
+        assert!(then.style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn bold_text_elsewhere_in_a_body_is_left_untouched() {
+        let piece = Piece::Unchanged {
+            text: "this passage has **bold** text, not a bullet".to_string(),
+        };
+        let row = DiffRow::Body { piece: &piece };
+        let spans = content_spans(&row);
+
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "this passage has **bold** text, not a bullet");
+        assert!(
+            spans
+                .iter()
+                .all(|s| !s.style.add_modifier.contains(Modifier::BOLD))
+        );
     }
 }
