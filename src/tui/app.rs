@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::ListState;
 
 use crate::changes::{Change, Changes, ChangesError};
@@ -54,6 +54,10 @@ pub struct App {
     /// `max_scroll` as computed by the most recent render, cached so `$`/`End` can jump
     /// straight to it without `handle_key` needing to know the pane's rendered width.
     max_h_scroll: usize,
+    /// The left pane's visible row count as of the most recent render, cached so
+    /// `Ctrl+d`/`Ctrl+u` can jump by half of it without `handle_key` needing to know
+    /// the pane's rendered height.
+    left_viewport_rows: usize,
 
     focus: Focus,
     diff_state: DiffPaneState,
@@ -64,6 +68,9 @@ pub struct App {
     /// `max_line_offset` as computed by the most recent render, cached for the same
     /// reason as `max_h_scroll` (see design.md).
     max_line_offset: usize,
+    /// The right pane's visible row count as of the most recent render, mirroring
+    /// `left_viewport_rows`.
+    right_viewport_rows: usize,
 }
 
 impl App {
@@ -74,6 +81,7 @@ impl App {
             list_state: ListState::default().with_selected(Some(0)),
             h_scroll: 0,
             max_h_scroll: 0,
+            left_viewport_rows: 0,
 
             focus: Focus::Left,
             diff_state: DiffPaneState::NotAChange,
@@ -82,6 +90,7 @@ impl App {
             cursor: 0,
             line_offset: 0,
             max_line_offset: 0,
+            right_viewport_rows: 0,
         };
         app.recompute_diff();
         app
@@ -107,6 +116,12 @@ impl App {
     /// `$`/`End` can jump straight to it on the next keypress.
     pub fn set_max_h_scroll(&mut self, max_h_scroll: usize) {
         self.max_h_scroll = max_h_scroll;
+    }
+
+    /// Called by the left pane's renderer after computing its inner height, so
+    /// `Ctrl+d`/`Ctrl+u` can jump by half of it.
+    pub fn set_left_viewport_rows(&mut self, rows: usize) {
+        self.left_viewport_rows = rows;
     }
 
     pub fn focus(&self) -> Focus {
@@ -144,6 +159,12 @@ impl App {
         self.max_line_offset = max_line_offset;
     }
 
+    /// Called by the right pane's renderer after computing its inner height, mirroring
+    /// `set_left_viewport_rows`.
+    pub fn set_right_viewport_rows(&mut self, rows: usize) {
+        self.right_viewport_rows = rows;
+    }
+
     pub fn pane_view(&self) -> PaneView {
         match &self.diff_state {
             DiffPaneState::NotAChange => PaneView::NotAChange,
@@ -175,10 +196,18 @@ impl App {
     }
 
     fn handle_left_key(&mut self, key: KeyEvent) {
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            match key.code {
+                KeyCode::Char('d') => self.move_selection(half_page(self.left_viewport_rows)),
+                KeyCode::Char('u') => self.move_selection(-half_page(self.left_viewport_rows)),
+                _ => {}
+            }
+            return;
+        }
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
             KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
-            KeyCode::Enter | KeyCode::Char(' ') => self.toggle_archived_at_cursor(),
+            KeyCode::Enter | KeyCode::Char(' ') => self.activate_at_cursor(),
             KeyCode::Left | KeyCode::Char('h') => {
                 self.h_scroll = self.h_scroll.saturating_sub(1);
             }
@@ -195,6 +224,14 @@ impl App {
     }
 
     fn handle_right_key(&mut self, key: KeyEvent) {
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            match key.code {
+                KeyCode::Char('d') => self.move_cursor(half_page(self.right_viewport_rows)),
+                KeyCode::Char('u') => self.move_cursor(-half_page(self.right_viewport_rows)),
+                _ => {}
+            }
+            return;
+        }
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => self.move_cursor(-1),
             KeyCode::Down | KeyCode::Char('j') => self.move_cursor(1),
@@ -213,6 +250,21 @@ impl App {
         self.list_state
             .select(Some(next_selectable(&rows, current, delta)));
         self.recompute_diff();
+    }
+
+    /// Enter/Space on the cursor's row: toggles the archived section when the cursor is
+    /// on its header (unchanged), or moves focus to the right pane when the cursor is on
+    /// a change row, since there's now something for the right pane to show.
+    fn activate_at_cursor(&mut self) {
+        let rows = self.rows();
+        let Some(selected) = self.list_state.selected() else {
+            return;
+        };
+        match rows.get(selected) {
+            Some(Row::ArchivedHeader { .. }) => self.toggle_archived_at_cursor(),
+            Some(Row::Active(_) | Row::Archived(_)) => self.focus = Focus::Right,
+            _ => {}
+        }
     }
 
     fn toggle_archived_at_cursor(&mut self) {
@@ -351,47 +403,69 @@ fn row_change<'a>(row: &Row<'a>) -> Option<&'a Change> {
     }
 }
 
-/// Moves `current` by `delta` rows, skipping a single adjacent placeholder row.
-/// Clamps at the ends of `rows` rather than wrapping.
-fn next_selectable(rows: &[Row], current: usize, delta: isize) -> usize {
-    let len = rows.len() as isize;
-    if len == 0 {
-        return current;
-    }
-
-    let mut new = current as isize + delta;
-    if new < 0 || new >= len {
-        return current;
-    }
-    if !rows[new as usize].is_selectable() {
-        new += delta;
-        if new < 0 || new >= len {
-            return current;
-        }
-    }
-    new as usize
+/// Half of a pane's visible row count, as a movement delta for `Ctrl+d`/`Ctrl+u`.
+/// Row-count-based, not line-count-based, so it reuses the same clamped movement
+/// path as single-step `j`/`k` (see design.md).
+fn half_page(viewport_rows: usize) -> isize {
+    (viewport_rows / 2) as isize
 }
 
-/// Moves `current` by `delta` rows, skipping any run of non-selectable rows
-/// (group headings, intro/body content, notices). Clamps at the ends rather
-/// than wrapping.
-fn next_selectable_row(rows: &[DiffRow], current: usize, delta: isize) -> usize {
-    let len = rows.len() as isize;
-    if len == 0 {
+/// Moves `current` by up to `delta.abs()` selectable rows in `delta`'s direction,
+/// skipping placeholder rows along the way. Walks one row at a time (rather than
+/// jumping straight by `delta`) so a jump larger than 1 — as `Ctrl+d`/`Ctrl+u` use —
+/// lands on the furthest reachable selectable row instead of overshooting past the
+/// end and snapping back to `current`. Clamps at the ends of `rows` rather than
+/// wrapping.
+fn next_selectable(rows: &[Row], current: usize, delta: isize) -> usize {
+    if rows.is_empty() {
         return current;
     }
-
+    let len = rows.len() as isize;
+    let step = if delta >= 0 { 1 } else { -1 };
     let mut idx = current as isize;
-    loop {
-        let next = idx + delta;
+    let mut last_selectable = current as isize;
+    let mut remaining = delta.abs();
+    while remaining > 0 {
+        let next = idx + step;
         if next < 0 || next >= len {
-            return current;
+            break;
         }
         idx = next;
         if rows[idx as usize].is_selectable() {
-            return idx as usize;
+            last_selectable = idx;
+            remaining -= 1;
         }
     }
+    last_selectable as usize
+}
+
+/// Moves `current` by up to `delta.abs()` selectable rows in `delta`'s direction,
+/// skipping any run of non-selectable rows (group headings, intro/body content,
+/// notices) along the way. Mirrors `next_selectable`'s one-row-at-a-time walk, for
+/// the same reason: a jump larger than 1 must land on the furthest reachable
+/// selectable row, not overshoot and snap back to `current`. Clamps at the ends
+/// rather than wrapping.
+fn next_selectable_row(rows: &[DiffRow], current: usize, delta: isize) -> usize {
+    if rows.is_empty() {
+        return current;
+    }
+    let len = rows.len() as isize;
+    let step = if delta >= 0 { 1 } else { -1 };
+    let mut idx = current as isize;
+    let mut last_selectable = current as isize;
+    let mut remaining = delta.abs();
+    while remaining > 0 {
+        let next = idx + step;
+        if next < 0 || next >= len {
+            break;
+        }
+        idx = next;
+        if rows[idx as usize].is_selectable() {
+            last_selectable = idx;
+            remaining -= 1;
+        }
+    }
+    last_selectable as usize
 }
 
 fn archived_header_index(rows: &[Row]) -> Option<usize> {
@@ -848,5 +922,180 @@ mod tests {
         assert_eq!(app.diff_rows()[app.cursor].expanded(), Some(true));
         app.handle_key(key(KeyCode::Enter));
         assert_eq!(app.diff_rows()[app.cursor].expanded(), Some(false));
+    }
+
+    // --- left pane: Enter/Space focus-shift ---
+
+    fn app_with_active_changes(names: &[&str]) -> App {
+        let mut app = empty_app();
+        app.changes.active = names.iter().map(|n| Change(n.to_string())).collect();
+        app
+    }
+
+    #[test]
+    fn enter_on_an_active_change_row_moves_focus_right() {
+        let mut app = app_with_active_changes(&["a", "b"]);
+        app.list_state.select(Some(0));
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(app.focus(), Focus::Right);
+    }
+
+    #[test]
+    fn space_on_an_archived_change_row_moves_focus_right() {
+        let mut app = empty_app();
+        app.changes.archived = vec![Change("archive/2026-01-01-x".to_string())];
+        app.archived_expanded = true;
+        let rows = app.rows();
+        let idx = rows
+            .iter()
+            .position(|r| matches!(r, Row::Archived(_)))
+            .unwrap();
+        app.list_state.select(Some(idx));
+        app.handle_key(key(KeyCode::Char(' ')));
+        assert_eq!(app.focus(), Focus::Right);
+    }
+
+    #[test]
+    fn enter_on_the_archived_header_does_not_move_focus_but_still_toggles() {
+        let mut app = empty_app();
+        let rows = app.rows();
+        let idx = rows
+            .iter()
+            .position(|r| matches!(r, Row::ArchivedHeader { .. }))
+            .unwrap();
+        app.list_state.select(Some(idx));
+        assert!(!app.archived_expanded);
+
+        app.handle_key(key(KeyCode::Enter));
+
+        assert_eq!(app.focus(), Focus::Left);
+        assert!(app.archived_expanded, "header should still toggle");
+    }
+
+    // --- half-page movement (Ctrl+u / Ctrl+d) ---
+
+    fn ctrl_key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::CONTROL)
+    }
+
+    #[test]
+    fn ctrl_d_moves_left_pane_selection_down_by_half_the_viewport() {
+        let names: Vec<String> = (0..20).map(|i| format!("change-{i}")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let mut app = app_with_active_changes(&refs);
+        app.list_state.select(Some(0));
+        app.set_left_viewport_rows(10);
+
+        app.handle_key(ctrl_key(KeyCode::Char('d')));
+
+        assert_eq!(app.list_state.selected(), Some(5));
+    }
+
+    #[test]
+    fn ctrl_u_moves_left_pane_selection_up_by_half_the_viewport() {
+        let names: Vec<String> = (0..20).map(|i| format!("change-{i}")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let mut app = app_with_active_changes(&refs);
+        app.list_state.select(Some(15));
+        app.set_left_viewport_rows(10);
+
+        app.handle_key(ctrl_key(KeyCode::Char('u')));
+
+        assert_eq!(app.list_state.selected(), Some(10));
+    }
+
+    #[test]
+    fn ctrl_d_clamps_at_the_last_selectable_row_in_the_left_pane() {
+        let names: Vec<String> = (0..5).map(|i| format!("change-{i}")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let mut app = app_with_active_changes(&refs);
+        app.list_state.select(Some(0));
+        // Half-page (10) far exceeds the 6 selectable rows (5 active + header).
+        app.set_left_viewport_rows(20);
+
+        app.handle_key(ctrl_key(KeyCode::Char('d')));
+
+        let last = app.rows().len() - 1;
+        assert_eq!(app.list_state.selected(), Some(last));
+    }
+
+    #[test]
+    fn ctrl_d_moves_right_pane_cursor_down_by_half_the_viewport() {
+        let mut diff = sample_diff("cap");
+        diff.requirements = (0..20)
+            .map(|i| RequirementDiff {
+                name: format!("Req{i}"),
+                op: Operation::Added,
+                intro: unchanged("intro"),
+                scenarios: vec![],
+            })
+            .collect();
+        let mut app = app_with_loaded(vec![("cap", diff)]);
+        app.focus = Focus::Right;
+        let start = app.cursor; // first selectable row (past the group heading)
+        app.set_right_viewport_rows(10);
+
+        app.handle_key(ctrl_key(KeyCode::Char('d')));
+
+        assert_eq!(app.cursor, start + 5);
+    }
+
+    #[test]
+    fn ctrl_u_moves_right_pane_cursor_up_by_half_the_viewport() {
+        let mut diff = sample_diff("cap");
+        diff.requirements = (0..20)
+            .map(|i| RequirementDiff {
+                name: format!("Req{i}"),
+                op: Operation::Added,
+                intro: unchanged("intro"),
+                scenarios: vec![],
+            })
+            .collect();
+        let mut app = app_with_loaded(vec![("cap", diff)]);
+        app.focus = Focus::Right;
+        app.cursor = app.diff_rows().len() - 1; // last row (Req19), selectable
+        app.set_right_viewport_rows(10);
+
+        app.handle_key(ctrl_key(KeyCode::Char('u')));
+
+        assert_eq!(app.cursor, app.diff_rows().len() - 1 - 5);
+    }
+
+    #[test]
+    fn ctrl_d_clamps_at_the_last_selectable_row_in_the_right_pane() {
+        let mut diff = sample_diff("cap");
+        diff.requirements = (0..3)
+            .map(|i| RequirementDiff {
+                name: format!("Req{i}"),
+                op: Operation::Added,
+                intro: unchanged("intro"),
+                scenarios: vec![],
+            })
+            .collect();
+        let mut app = app_with_loaded(vec![("cap", diff)]);
+        app.focus = Focus::Right;
+        // Half-page (10) far exceeds the 3 selectable requirement rows.
+        app.set_right_viewport_rows(20);
+
+        app.handle_key(ctrl_key(KeyCode::Char('d')));
+
+        let last = app.diff_rows().len() - 1;
+        assert_eq!(app.cursor, last);
+    }
+
+    #[test]
+    fn ctrl_d_does_not_move_left_pane_selection_while_right_pane_holds_focus() {
+        let mut app = app_with_active_changes(&["a", "b", "c"]);
+        app.list_state.select(Some(0));
+        app.set_left_viewport_rows(10);
+        app.focus = Focus::Right;
+
+        app.handle_key(ctrl_key(KeyCode::Char('d')));
+
+        assert_eq!(
+            app.list_state.selected(),
+            Some(0),
+            "left pane selection must not move while the right pane is focused"
+        );
     }
 }

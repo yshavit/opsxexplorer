@@ -36,18 +36,18 @@ Exactly one pane SHALL hold keyboard input focus at any time. The left pane SHAL
 - **WHEN** the user presses a key the application handles globally, whichever pane holds focus
 - **THEN** it takes effect regardless of which pane is focused
 
-### Requirement: Ctrl+Q exits the application
-The system SHALL exit when the user presses Ctrl+Q.
+### Requirement: q exits the application
+The system SHALL exit when the user presses `q` with no modifier keys held.
 
-#### Scenario: user presses Ctrl+Q
-- **WHEN** the user presses Ctrl+Q while the application is running
+#### Scenario: user presses q
+- **WHEN** the user presses `q` while the application is running
 - **THEN** the application exits
 
 ### Requirement: Terminal state is restored on exit
 The system SHALL restore the terminal to its prior state (leaving raw mode and the alternate screen) whenever it exits, whether by normal quit or by an unexpected panic.
 
 #### Scenario: normal exit restores terminal
-- **WHEN** the user quits the application via Ctrl+Q
+- **WHEN** the user quits the application by pressing `q`
 - **THEN** the terminal returns to its normal, non-raw, non-alternate-screen state
 
 #### Scenario: panic restores terminal

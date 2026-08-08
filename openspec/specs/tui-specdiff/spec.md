@@ -198,7 +198,7 @@ The right pane SHALL place its cursor only on rows that can be collapsed or expa
 - **THEN** it lands on the next requirement or scenario row rather than on the content
 
 ### Requirement: Right-pane keys move the cursor and toggle rows
-When the right pane holds focus, the system SHALL move the cursor to the previous row on `k` or the up arrow and to the next row on `j` or the down arrow, toggle the row under the cursor between expanded and collapsed on `Enter` or `Space`, expand the row under the cursor on `l` or the right arrow, and collapse it on `h` or the left arrow. Cursor movement SHALL stop at the ends of the content rather than wrapping around. These keys SHALL have no effect on the right pane while the left pane holds focus.
+When the right pane holds focus, the system SHALL move the cursor to the previous row on `k` or the up arrow and to the next row on `j` or the down arrow, move the cursor by a half-page of rows at a time on `Ctrl+u` (up) and `Ctrl+d` (down) where a half-page is derived from the pane's current visible row count, toggle the row under the cursor between expanded and collapsed on `Enter` or `Space`, expand the row under the cursor on `l` or the right arrow, and collapse it on `h` or the left arrow. Cursor movement SHALL stop at the ends of the content rather than wrapping around. These keys SHALL have no effect on the right pane while the left pane holds focus.
 
 #### Scenario: moving the cursor down
 - **WHEN** the right pane holds focus and the user presses `j` or the down arrow
@@ -223,6 +223,18 @@ When the right pane holds focus, the system SHALL move the cursor to the previou
 #### Scenario: keys are inert while the left pane holds focus
 - **WHEN** the left pane holds focus and the user presses any of these keys
 - **THEN** the right pane's cursor and collapse state are unchanged
+
+#### Scenario: half-page down with Ctrl+d
+- **WHEN** the right pane holds focus and the user presses `Ctrl+d`
+- **THEN** the cursor moves down by roughly half the pane's visible row count, and the pane scrolls to keep it visible
+
+#### Scenario: half-page up with Ctrl+u
+- **WHEN** the right pane holds focus and the user presses `Ctrl+u`
+- **THEN** the cursor moves up by roughly half the pane's visible row count, and the pane scrolls to keep it visible
+
+#### Scenario: half-page movement clamps at the ends
+- **WHEN** fewer than half a page of selectable rows remain in the direction of travel
+- **THEN** the cursor stops at the first or last selectable row rather than overshooting
 
 ### Requirement: The right pane scrolls vertically and indicates its scroll position
 Because a capability's diff can be taller than the pane, the right pane SHALL scroll vertically to keep the cursor visible as it moves, and SHALL indicate the current scroll position with a vertical scrollbar. The scrollbar SHALL be rendered whether or not the content overflows, showing its "nothing to scroll" state when it fits, so that the pane's layout does not shift as content changes. Scrolling SHALL advance by rendered line, so that a row wrapping onto several lines does not make scrolling skip content.

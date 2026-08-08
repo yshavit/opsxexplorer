@@ -4,7 +4,7 @@ mod layout;
 mod row;
 mod wrap;
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -39,12 +39,16 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> color_e
             if key.kind != KeyEventKind::Press {
                 continue;
             }
-            if key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            if is_quit_key(&key) {
                 return Ok(());
             }
             app.handle_key(key);
         }
     }
+}
+
+fn is_quit_key(key: &KeyEvent) -> bool {
+    key.code == KeyCode::Char('q') && key.modifiers == KeyModifiers::NONE
 }
 
 fn render(frame: &mut Frame, app: &mut App) {
@@ -60,7 +64,8 @@ fn render_left_pane(frame: &mut Frame, area: Rect, app: &mut App) {
     let block = Block::bordered()
         .title("Changes")
         .border_style(focus_border_style(app.focus() == Focus::Left));
-    let inner_width = block.inner(area).width as usize;
+    let inner = block.inner(area);
+    let inner_width = inner.width as usize;
 
     let rows = app.rows();
     let widest = widest_row_width(&rows);
@@ -72,6 +77,7 @@ fn render_left_pane(frame: &mut Frame, area: Rect, app: &mut App) {
         .collect();
 
     app.set_max_h_scroll(max_scroll);
+    app.set_left_viewport_rows(inner.height as usize);
 
     let list = List::new(items)
         .block(block)
@@ -172,6 +178,7 @@ fn render_diff_tabs(
     );
     app.set_line_offset(offset);
     app.set_max_line_offset(max_line_offset);
+    app.set_right_viewport_rows(inner_height);
 
     if let Some((start, end)) = selected_range {
         for line in &mut lines[start..end] {
@@ -473,6 +480,22 @@ fn is_indented(row: &Row) -> bool {
 mod tests {
     use super::*;
     use crate::changes::Change;
+
+    #[test]
+    fn q_with_no_modifier_is_the_quit_key() {
+        assert!(is_quit_key(&KeyEvent::new(
+            KeyCode::Char('q'),
+            KeyModifiers::NONE
+        )));
+    }
+
+    #[test]
+    fn ctrl_q_is_no_longer_the_quit_key() {
+        assert!(!is_quit_key(&KeyEvent::new(
+            KeyCode::Char('q'),
+            KeyModifiers::CONTROL
+        )));
+    }
 
     #[test]
     fn widest_row_width_picks_the_longest_row() {
