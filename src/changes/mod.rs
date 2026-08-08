@@ -19,6 +19,7 @@ pub struct ChangeViews<'a> {
     pub change: Change,
 }
 
+use std::cmp::Ordering;
 use std::path::Path;
 
 use git2::Repository;
@@ -38,7 +39,15 @@ impl Changes {
         let repo = Repository::discover(start).ok();
         let current = vfs.current();
         let active = discovery::discover_active(&current)?;
-        let archived = discovery::discover_archived(&current)?;
+        let mut archived = discovery::discover_archived(&current)?;
+        archived.sort_by(|a, b| {
+            let a_introduced_at = repo.as_ref().and_then(|r| history::first_commit_time(r, a));
+            let b_introduced_at = repo.as_ref().and_then(|r| history::first_commit_time(r, b));
+            b.archive_date()
+                .cmp(&a.archive_date())
+                .then_with(|| cmp_introduced_at(a_introduced_at, b_introduced_at))
+                .then_with(|| a.0.cmp(&b.0))
+        });
         Ok(Changes {
             vfs,
             repo,
@@ -77,6 +86,18 @@ impl Changes {
             DiffBase::Current => Ok(self.vfs.current()),
             DiffBase::At(r) => self.vfs.at(&r),
         }
+    }
+}
+
+/// Orders introducing-commit timestamps descending (most recent first), with
+/// `None` (no resolvable introducing commit) treated as newer than any
+/// resolvable timestamp.
+fn cmp_introduced_at(a: Option<i64>, b: Option<i64>) -> Ordering {
+    match (a, b) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Less,
+        (Some(_), None) => Ordering::Greater,
+        (Some(x), Some(y)) => y.cmp(&x),
     }
 }
 
@@ -129,6 +150,24 @@ mod test_support {
         let tree_oid = index.write_tree().unwrap();
         let tree = repo.find_tree(tree_oid).unwrap();
         let sig = Signature::now("Test", "test@example.com").unwrap();
+        let parent = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
+        let parents: Vec<&git2::Commit> = parent.iter().collect();
+        repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)
+            .unwrap()
+    }
+
+    /// Like `stage_and_commit`, but with an explicit commit timestamp, so
+    /// tests that assert an ordering derived from commit time aren't at the
+    /// mercy of two commits landing in the same wall-clock second.
+    pub fn stage_and_commit_at(repo: &Repository, message: &str, paths: &[&str], time: i64) -> Oid {
+        let mut index = repo.index().unwrap();
+        for path in paths {
+            index.add_path(Path::new(path)).unwrap();
+        }
+        index.write().unwrap();
+        let tree_oid = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_oid).unwrap();
+        let sig = Signature::new("Test", "test@example.com", &git2::Time::new(time, 0)).unwrap();
         let parent = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
         let parents: Vec<&git2::Commit> = parent.iter().collect();
         repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)
@@ -493,5 +532,173 @@ mod tests {
                 b"v1"
             );
         }
+    }
+
+    #[test]
+    fn discover_archived_orders_by_date_descending() {
+        let dir = TempDir::new("discover-date-desc");
+        let repo = Repository::init(dir.path()).unwrap();
+
+        write_file(
+            dir.path(),
+            "openspec/changes/archive/2026-01-03-foo/proposal.md",
+            "x",
+        );
+        write_file(
+            dir.path(),
+            "openspec/changes/archive/2026-06-19-bar/proposal.md",
+            "y",
+        );
+        stage_and_commit(
+            &repo,
+            "initial",
+            &[
+                "openspec/changes/archive/2026-01-03-foo/proposal.md",
+                "openspec/changes/archive/2026-06-19-bar/proposal.md",
+            ],
+        );
+
+        let changes = Changes::discover(dir.path()).unwrap();
+
+        assert_eq!(
+            changes.archived,
+            vec![
+                Change("archive/2026-06-19-bar".to_string()),
+                Change("archive/2026-01-03-foo".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn discover_archived_same_date_tiebreak_by_introducing_commit_most_recent_first() {
+        let dir = TempDir::new("discover-same-date-commit-tiebreak");
+        let repo = Repository::init(dir.path()).unwrap();
+
+        write_file(
+            dir.path(),
+            "openspec/changes/archive/2026-01-01-aaa/proposal.md",
+            "x",
+        );
+        stage_and_commit_at(
+            &repo,
+            "archive aaa",
+            &["openspec/changes/archive/2026-01-01-aaa/proposal.md"],
+            1_000_000,
+        );
+
+        write_file(
+            dir.path(),
+            "openspec/changes/archive/2026-01-01-bbb/proposal.md",
+            "y",
+        );
+        stage_and_commit_at(
+            &repo,
+            "archive bbb",
+            &["openspec/changes/archive/2026-01-01-bbb/proposal.md"],
+            1_000_100,
+        );
+
+        let changes = Changes::discover(dir.path()).unwrap();
+
+        assert_eq!(
+            changes.archived,
+            vec![
+                Change("archive/2026-01-01-bbb".to_string()),
+                Change("archive/2026-01-01-aaa".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn discover_archived_unresolvable_introducing_commit_sorts_first() {
+        let dir = TempDir::new("discover-unresolvable-sorts-first");
+        let repo = Repository::init(dir.path()).unwrap();
+
+        write_file(
+            dir.path(),
+            "openspec/changes/archive/2026-01-01-committed/proposal.md",
+            "x",
+        );
+        stage_and_commit(
+            &repo,
+            "archive committed",
+            &["openspec/changes/archive/2026-01-01-committed/proposal.md"],
+        );
+
+        // Present in the working tree but never committed.
+        write_file(
+            dir.path(),
+            "openspec/changes/archive/2026-01-01-uncommitted/proposal.md",
+            "y",
+        );
+
+        let changes = Changes::discover(dir.path()).unwrap();
+
+        assert_eq!(
+            changes.archived,
+            vec![
+                Change("archive/2026-01-01-uncommitted".to_string()),
+                Change("archive/2026-01-01-committed".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn discover_archived_tied_on_date_and_introducing_commit_falls_back_to_dirname_ascending() {
+        let dir = TempDir::new("discover-dirname-tiebreak");
+        let repo = Repository::init(dir.path()).unwrap();
+
+        // Both directories are introduced in the same commit, so both date
+        // and introducing-commit timestamp are tied.
+        write_file(
+            dir.path(),
+            "openspec/changes/archive/2026-01-01-bbb/proposal.md",
+            "x",
+        );
+        write_file(
+            dir.path(),
+            "openspec/changes/archive/2026-01-01-aaa/proposal.md",
+            "y",
+        );
+        stage_and_commit(
+            &repo,
+            "archive both",
+            &[
+                "openspec/changes/archive/2026-01-01-bbb/proposal.md",
+                "openspec/changes/archive/2026-01-01-aaa/proposal.md",
+            ],
+        );
+
+        let changes = Changes::discover(dir.path()).unwrap();
+
+        assert_eq!(
+            changes.archived,
+            vec![
+                Change("archive/2026-01-01-aaa".to_string()),
+                Change("archive/2026-01-01-bbb".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn discover_archived_keeps_change_with_unresolvable_introducing_commit() {
+        let dir = TempDir::new("discover-unresolvable-not-dropped");
+        Repository::init(dir.path()).unwrap();
+
+        // Present in the working tree but never committed - no enclosing
+        // commit history to resolve a timestamp from.
+        write_file(
+            dir.path(),
+            "openspec/changes/archive/2026-01-01-uncommitted/proposal.md",
+            "x",
+        );
+
+        let changes = Changes::discover(dir.path()).unwrap();
+
+        assert!(
+            changes
+                .archived
+                .contains(&Change("archive/2026-01-01-uncommitted".to_string()))
+        );
     }
 }

@@ -1,0 +1,36 @@
+## Context
+
+Archived changes are currently not sorted by any dedicated code path: `discovery::discover_archived` (`src/changes/discovery.rs:19`) maps directory entries into `Vec<Change>` in whatever order they came back from `Fs::list_dir`, and both VFS backends (`src/vfs/disk.rs:41`, `src/vfs/git.rs:74`) already sort those entries lexicographically by name. `Changes::discover` (`src/changes/mod.rs:36`) stores the result verbatim in `pub archived: Vec<Change>`, and the TUI (`src/tui/app.rs`, via `row::flatten`) renders whatever order it finds there — there is no sort step to intercept downstream of discovery.
+
+`Change` (`src/changes/change.rs:18`) already exposes `archive_date() -> Option<&str>`, a byte-slice check for a well-formed `YYYY-MM-DD` prefix (no `chrono` dependency in this crate).
+
+`history::resolve_archive_base` (`src/changes/history.rs:14`) already walks history to find "the commit that first introduced this directory" — a `Sort::TIME | Sort::REVERSE` revwalk from HEAD, matching the earliest commit whose tree contains the change's path — but it then returns the *parent* of that commit (the diff base, per proposal.md's "Context") and returns `Err(ChangesError::ArchiveHistoryNotFound)` when that commit has no parent or the path is never found. Both properties are wrong for a sort tiebreaker: we want the introducing commit's own timestamp, and a root-commit introduction should still produce a usable timestamp rather than an error. The revwalk-and-tree-lookup loop itself, though, is exactly what a sort tiebreaker also needs — worth sharing rather than duplicating (see Decisions).
+
+## Goals / Non-Goals
+
+**Goals:**
+- Sort `Changes::archived` by (date prefix, introducing-commit timestamp, dirname) as specified in specs/tui-changelist/spec.md — date and timestamp descending, dirname ascending as the final tiebreaker.
+- Keep the lookup infallible from the sort's point of view: any failure to resolve a timestamp (no repo, path never committed, git error) degrades to `None`, not a panic or a dropped row.
+
+**Non-Goals:**
+- Changing `active` ordering (stays lexicographic-ascending via the existing `list_dir` sort).
+- Changing `resolve_archive_base`'s public signature or its diff-base semantics/error behavior — it serves a different purpose (selecting a diff base) and keeps its existing contract, even though its internals are refactored to share code with the new lookup (see Decisions).
+- True calendar-date parsing/validation of the `YYYY-MM-DD` prefix — `archive_date()`'s existing string-based extraction is reused as-is.
+
+## Decisions
+
+**Where the sort happens**: in `Changes::discover` (`src/changes/mod.rs`), immediately after `discovery::discover_archived` returns, rather than inside `discovery.rs`. `discover_archived` only has an `&Fs`, not a `&Repository`; `Changes::discover` already holds `repo: Option<Repository>` at that point. Keeping `discovery.rs` free of git access also keeps its existing unit tests (which construct plain `Fs` values) unaffected.
+
+**Shared revwalk helper, not two independent walks**: `resolve_archive_base` and the new lookup both need "the earliest commit whose tree contains this path" — they just do different things with it (step to its parent vs. read its timestamp). Rather than duplicate the revwalk-and-tree-lookup loop, factor it into a private `first_commit(repo: &Repository, path: &Path) -> Option<CommitInfo>` in `history.rs`, where `CommitInfo { oid: Oid, time: i64 }` carries both the introducing commit's id (which `resolve_archive_base` needs, to step to its parent) and its timestamp (which the sort needs). `resolve_archive_base` is refactored to call `first_commit` and then resolve the parent from `oid`, keeping its existing `Result`/error behavior unchanged (still `Err(ChangesError::ArchiveHistoryNotFound)` when the path is never found *or* when the introducing commit has no parent). The new `pub fn first_commit_time(repo: &Repository, change: &Change) -> Option<i64>` becomes a thin wrapper: `first_commit(repo, &change.relative_path()).map(|c| c.time)`. Calling `resolve_archive_base` directly from the sort path (instead of sharing the underlying walk) was considered and rejected: it errors on a root-commit introduction (no parent to return), which would incorrectly report "no timestamp" for a change that in fact has a perfectly good introducing commit — exactly the case `first_commit_time` needs to handle correctly and `resolve_archive_base` structurally can't.
+
+**Comparator shape**: build a per-change sort key `(Option<String> date, Option<i64> introduced_at, String dirname)` and sort with a comparator (not a derived `Ord`), because the three fields don't all sort the same direction and `introduced_at` additionally needs `None` treated as newest. Concretely, combined with `Ordering::then_with` in this order:
+- `date`: compared as `Option<&str>`, descending (`b.cmp(a)` direction) — string comparison on `YYYY-MM-DD` sorts chronologically. Standard `Option` semantics apply here (a change with no parseable date prefix is expected to be rare, and sinking it to the bottom of a descending sort is a reasonable fallback, not a rule the spec calls out).
+- `introduced_at`: custom comparator where `None` is greater than every `Some(_)`, and `Some(x)` vs `Some(y)` compares `x` and `y` directly (descending) — this inverts the standard `Option` ordering (`None < Some(_)`) for this field only.
+- `dirname`: `change.0` (the full `archive/YYYY-MM-DD-name` string), ascending — the odd one out, direction-wise. Once date and commit history are exhausted as signals, falling back to plain lexicographical order for whatever's left keeps the tiebreak intuitive rather than compounding the "most recent first" framing onto a field it doesn't really apply to. Equivalent to comparing just the entry name for tie-breaking purposes since all archived entries share the `archive/` prefix.
+
+**Repo availability**: `Changes::discover` already tolerates `Repository::discover(start).ok()` returning `None` (e.g., not a git repo). `first_commit_time` is only called when `repo` is `Some`; when it's `None`, every archived change's `introduced_at` is `None`, so the sort degrades to (date, dirname) — consistent with "no resolvable introducing commit sorts as newest" since there's nothing to distinguish them on that axis.
+
+## Risks / Trade-offs
+
+- **Revwalk cost scales with archived-change count**: `first_commit_time` (via the shared `first_commit` helper) does an independent revwalk per archived change — same cost profile as the existing `resolve_archive_base`, just invoked for every archived entry up front instead of once per selection. For the repo sizes this tool targets (a single project's `openspec/changes/archive/`, typically tens of entries) this is not expected to be perceptible; no caching or batching is planned. If it becomes a problem, a follow-up could walk history once and bucket paths by first-introducing commit in a single pass, but that's more machinery than this change needs.
+- **`i64` commit-timestamp precision**: `git2::Time::seconds()` has one-second resolution. Two archived directories introduced in the same commit (or same second) fall through to the dirname tiebreaker, which the spec already accounts for.
