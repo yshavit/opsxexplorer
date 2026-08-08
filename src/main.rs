@@ -1,4 +1,5 @@
 mod changes;
+mod diff;
 mod specs;
 mod tui;
 mod vfs;
