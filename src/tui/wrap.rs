@@ -27,6 +27,9 @@ pub fn wrap_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Vec<Span<'stat
 
     for token in tokenize(&chars) {
         match token {
+            Token::Newline => {
+                lines.push(trim_trailing_space(std::mem::take(&mut line)));
+            }
             Token::Space(space) => {
                 if line.is_empty() {
                     // Never start a wrapped line with whitespace.
@@ -76,33 +79,64 @@ fn trim_trailing_space(mut line: Vec<(char, Style)>) -> Vec<(char, Style)> {
 enum Token {
     Word(Vec<(char, Style)>),
     Space(Vec<(char, Style)>),
+    /// A single forced line break. Kept out of `Space` deliberately: folding
+    /// `\n` into ordinary whitespace (as `char::is_whitespace()` would have
+    /// it) lets a width-based wrap swallow it like any other space, which is
+    /// exactly wrong for content that uses embedded newlines on purpose —
+    /// e.g. a scenario body's `- **WHEN** ...\n- **THEN** ...` bullets.
+    Newline,
 }
 
-/// Splits a char stream into maximal whitespace and non-whitespace runs, in order.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CharClass {
+    Word,
+    Space,
+    Newline,
+}
+
+fn classify(c: char) -> CharClass {
+    if c == '\n' {
+        CharClass::Newline
+    } else if c.is_whitespace() {
+        CharClass::Space
+    } else {
+        CharClass::Word
+    }
+}
+
+/// Splits a char stream into maximal word and non-newline-whitespace runs,
+/// plus one `Token::Newline` per line-break character, in order.
 fn tokenize(chars: &[(char, Style)]) -> Vec<Token> {
     let mut tokens = Vec::new();
     let mut current: Vec<(char, Style)> = Vec::new();
-    let mut current_is_space = false;
+    let mut current_class = CharClass::Space;
 
     for &(c, style) in chars {
-        let is_space = c.is_whitespace();
-        if !current.is_empty() && is_space != current_is_space {
-            tokens.push(finish_token(std::mem::take(&mut current), current_is_space));
+        let class = classify(c);
+        if class == CharClass::Newline {
+            if !current.is_empty() {
+                tokens.push(finish_token(std::mem::take(&mut current), current_class));
+            }
+            tokens.push(Token::Newline);
+            continue;
         }
-        current_is_space = is_space;
+        if !current.is_empty() && class != current_class {
+            tokens.push(finish_token(std::mem::take(&mut current), current_class));
+        }
+        current_class = class;
         current.push((c, style));
     }
     if !current.is_empty() {
-        tokens.push(finish_token(current, current_is_space));
+        tokens.push(finish_token(current, current_class));
     }
     tokens
 }
 
-fn finish_token(chars: Vec<(char, Style)>, is_space: bool) -> Token {
-    if is_space {
-        Token::Space(chars)
-    } else {
-        Token::Word(chars)
+fn finish_token(chars: Vec<(char, Style)>, class: CharClass) -> Token {
+    match class {
+        CharClass::Space => Token::Space(chars),
+        CharClass::Word => Token::Word(chars),
+        CharClass::Newline => unreachable!("newline chars are pushed as Token::Newline directly"),
     }
 }
 
@@ -234,5 +268,28 @@ mod tests {
         let lines = wrap_spans(vec![Span::raw("")], 10);
         assert_eq!(lines.len(), 1);
         assert!(lines[0].is_empty());
+    }
+
+    #[test]
+    fn embedded_newline_forces_a_line_break_even_when_the_width_has_room() {
+        // A scenario body's "- **WHEN** ...\n- **THEN** ..." bullets must not
+        // be flowed onto one line just because both fit within the width.
+        let spans = vec![Span::raw("- **WHEN** x\n- **THEN** y")];
+        let lines = wrap_spans(spans, 80);
+        assert_eq!(texts(&lines), vec!["- **WHEN** x", "- **THEN** y"]);
+    }
+
+    #[test]
+    fn consecutive_newlines_produce_a_blank_line_between_paragraphs() {
+        let spans = vec![Span::raw("first\n\nsecond")];
+        let lines = wrap_spans(spans, 80);
+        assert_eq!(texts(&lines), vec!["first", "", "second"]);
+    }
+
+    #[test]
+    fn newline_still_wraps_normally_within_each_segment() {
+        let spans = vec![Span::raw("the quick brown fox\njumps over")];
+        let lines = wrap_spans(spans, 10);
+        assert_eq!(texts(&lines), vec!["the quick", "brown fox", "jumps over"]);
     }
 }

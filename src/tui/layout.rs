@@ -64,11 +64,25 @@ fn gutter_marker(row: &DiffRow) -> (&'static str, Style) {
 
 /// The gutter marker for a requirement row, one per `Operation` variant.
 fn requirement_marker(op: &Operation) -> (&'static str, Style) {
+    let style = operation_style(op);
     match op {
-        Operation::Added => ("+", added_style()),
-        Operation::Modified => ("~", modified_style()),
-        Operation::Removed => ("-", removed_style()),
-        Operation::Renamed { .. } => ("»", renamed_style()),
+        Operation::Added => ("+", style),
+        Operation::Modified => ("~", style),
+        Operation::Removed => ("-", style),
+        Operation::Renamed { .. } => ("»", style),
+    }
+}
+
+/// The color associated with an operation, shared by the requirement marker
+/// and the group heading box so the two never drift apart. Renamed shares
+/// Modified's color rather than getting its own: cyan read too close to the
+/// pane focus highlight, and the marker glyph (`»` vs `~`) already
+/// distinguishes the two operations on its own.
+pub(crate) fn operation_style(op: &Operation) -> Style {
+    match op {
+        Operation::Added => added_style(),
+        Operation::Modified | Operation::Renamed { .. } => modified_style(),
+        Operation::Removed => removed_style(),
     }
 }
 
@@ -97,10 +111,6 @@ fn modified_style() -> Style {
     Style::new().fg(Color::Yellow)
 }
 
-fn renamed_style() -> Style {
-    Style::new().fg(Color::Cyan)
-}
-
 fn content_spans(row: &DiffRow) -> Vec<Span<'static>> {
     match row {
         DiffRow::GroupHeading(op) => {
@@ -112,24 +122,45 @@ fn content_spans(row: &DiffRow) -> Vec<Span<'static>> {
         DiffRow::Requirement {
             name, op, expanded, ..
         } => {
-            let mut spans = vec![Span::raw(expand_arrow(*expanded))];
+            let mut spans = vec![
+                Span::raw(expand_arrow(*expanded)),
+                Span::styled("REQ", operation_style(op)),
+                Span::raw(" "),
+            ];
             match op {
-                Operation::Renamed { from } => spans.push(Span::raw(format!("{from} → {name}"))),
+                Operation::Renamed { from } => {
+                    spans.push(Span::styled(
+                        from.clone(),
+                        Style::new().add_modifier(Modifier::DIM),
+                    ));
+                    spans.push(Span::styled(" → ", modified_style()));
+                    spans.push(Span::raw((*name).to_string()));
+                }
                 _ => spans.push(Span::raw((*name).to_string())),
             }
             spans
         }
         DiffRow::Intro { piece } => {
-            let spans = piece_spans(piece);
+            let (_, marker_style) = piece_marker(piece);
+            let mut spans = vec![Span::styled("¶", marker_style), Span::raw(" ")];
+            spans.extend(piece_spans(piece));
             if matches!(piece, Piece::Unmentioned { .. }) {
                 dim(spans)
             } else {
                 spans
             }
         }
-        DiffRow::Scenario { name, expanded, .. } => {
+        DiffRow::Scenario {
+            name,
+            body,
+            expanded,
+            ..
+        } => {
+            let (_, marker_style) = piece_marker(body);
             vec![
                 Span::raw(expand_arrow(*expanded)),
+                Span::styled("§", marker_style),
+                Span::raw(" "),
                 Span::raw((*name).to_string()),
             ]
         }
@@ -142,7 +173,7 @@ fn expand_arrow(expanded: bool) -> &'static str {
     if expanded { "▾ " } else { "▸ " }
 }
 
-fn heading_text(op: &Operation) -> &'static str {
+pub(crate) fn heading_text(op: &Operation) -> &'static str {
     match op {
         Operation::Added => "Added",
         Operation::Modified => "Modified",
@@ -407,5 +438,37 @@ mod tests {
         let text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("Old Name"));
         assert!(text.contains("New Name"));
+    }
+
+    #[test]
+    fn renamed_requirement_dims_the_old_name_and_colors_the_arrow_like_modified() {
+        let row = DiffRow::Requirement {
+            name: "New Name",
+            op: &Operation::Renamed {
+                from: "Old Name".to_string(),
+            },
+            expanded: false,
+            key: dummy_key("New Name"),
+        };
+        let spans = &row_lines(&row, 60)[0].spans;
+
+        let old_name = spans
+            .iter()
+            .find(|s| s.content.as_ref() == "Old Name")
+            .expect("expected a span exactly matching the old name");
+        assert!(old_name.style.add_modifier.contains(Modifier::DIM));
+
+        let arrow = spans
+            .iter()
+            .find(|s| s.content.as_ref() == " → ")
+            .expect("expected a span exactly matching the arrow");
+        assert_eq!(arrow.style, modified_style());
+
+        let new_name = spans
+            .iter()
+            .find(|s| s.content.as_ref() == "New Name")
+            .expect("expected a span exactly matching the new name");
+        assert!(!new_name.style.add_modifier.contains(Modifier::DIM));
+        assert_ne!(new_name.style, modified_style());
     }
 }

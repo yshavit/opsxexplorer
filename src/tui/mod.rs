@@ -14,8 +14,10 @@ use ratatui::widgets::{
 };
 
 use crate::changes::Changes;
+use crate::diff::Operation;
 
 use app::{App, Focus, PaneView};
+use diff_row::DiffRow;
 use row::Row;
 
 pub fn run() -> color_eyre::Result<()> {
@@ -157,26 +159,17 @@ fn render_diff_tabs(
     let inner_height = inner.height as usize;
     let cursor = app.cursor();
 
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    let mut selected_range: Option<(usize, usize)> = None;
-    for (i, row) in app.diff_rows().iter().enumerate() {
-        let row_lines = layout::row_lines(row, inner_width);
-        let start = lines.len();
-        if i == cursor {
-            selected_range = Some((start, start + row_lines.len()));
-        }
-        lines.extend(row_lines);
-    }
+    let (mut lines, selected_range, reveal_end) =
+        build_diff_lines(&app.diff_rows(), inner_width, cursor);
 
     let max_line_offset = lines.len().saturating_sub(inner_height);
-    let mut offset = app.line_offset().min(max_line_offset);
-    if let Some((start, end)) = selected_range {
-        if start < offset {
-            offset = start;
-        } else if inner_height > 0 && end > offset + inner_height {
-            offset = end.saturating_sub(inner_height);
-        }
-    }
+    let offset = clamp_offset(
+        app.line_offset(),
+        max_line_offset,
+        selected_range,
+        reveal_end,
+        inner_height,
+    );
     app.set_line_offset(offset);
     app.set_max_line_offset(max_line_offset);
 
@@ -203,6 +196,169 @@ fn render_right_scrollbar(frame: &mut Frame, area: Rect, offset: usize, max_line
     frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
 }
 
+/// Lays out a tab's rows into rendered lines, and reports which line range
+/// belongs to the row at `cursor` (for highlighting) plus how far its
+/// revealed content — the rows expanding it just uncovered — extends (for
+/// scrolling). A blank line is inserted before every group heading except
+/// the first, and each heading renders as a small bordered box rather than a
+/// plain line, so a capability's operation groups (Added/Modified/...) read
+/// as visually distinct sections rather than running together — the cursor
+/// is unaffected since it addresses `DiffRow`s, not rendered lines, and
+/// neither the spacer nor the box's extra border lines are rows.
+///
+/// `reveal_end` is `selected_range`'s own `end` widened through whatever the
+/// cursor's row owns: a `Requirement`'s intro and scenario headers (and any
+/// of *their* expanded bodies), or a `Scenario`'s own body. It stops at the
+/// next row that isn't part of that — another requirement, a group heading,
+/// or a notice. Without this, expanding the bottom-most row on screen reveals
+/// content the offset-clamp never learns about, since it only ever checked
+/// the cursor row's own single-row span.
+fn build_diff_lines(
+    rows: &[DiffRow],
+    width: usize,
+    cursor: usize,
+) -> (Vec<Line<'static>>, Option<(usize, usize)>, usize) {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut selected_range: Option<(usize, usize)> = None;
+    let mut reveal_end = 0;
+    let mut seen_group_heading = false;
+    let mut in_cursor_block = false;
+    let mut cursor_is_requirement = false;
+
+    for (i, row) in rows.iter().enumerate() {
+        if in_cursor_block {
+            let leaves_block = match row {
+                DiffRow::Intro { .. } | DiffRow::Body { .. } => false,
+                DiffRow::Scenario { .. } => !cursor_is_requirement,
+                DiffRow::Requirement { .. } | DiffRow::GroupHeading(_) | DiffRow::Notice(_) => true,
+            };
+            if leaves_block {
+                reveal_end = lines.len();
+                in_cursor_block = false;
+            }
+        }
+
+        let row_lines = if let DiffRow::GroupHeading(op) = row {
+            if seen_group_heading {
+                lines.push(Line::default());
+            }
+            seen_group_heading = true;
+            group_heading_box(op, width, requirement_count_after(rows, i))
+        } else {
+            layout::row_lines(row, width)
+        };
+
+        let start = lines.len();
+        if i == cursor {
+            let end = start + row_lines.len();
+            selected_range = Some((start, end));
+            reveal_end = end;
+            in_cursor_block = true;
+            cursor_is_requirement = matches!(row, DiffRow::Requirement { .. });
+        }
+        lines.extend(row_lines);
+    }
+    if in_cursor_block {
+        reveal_end = lines.len();
+    }
+
+    (lines, selected_range, reveal_end)
+}
+
+/// Counts how many requirements the group heading at `heading_index`
+/// introduces, so its label can read "Added Requirement" vs "Added
+/// Requirements". Scans the run's own top-level `Requirement` rows, skipping
+/// their (possibly expanded) children, and stops at the next group heading
+/// or notice — the same boundary `build_diff_lines`'s block-detection uses.
+fn requirement_count_after(rows: &[DiffRow], heading_index: usize) -> usize {
+    rows[heading_index + 1..]
+        .iter()
+        .take_while(|row| !matches!(row, DiffRow::GroupHeading(_) | DiffRow::Notice(_)))
+        .filter(|row| matches!(row, DiffRow::Requirement { .. }))
+        .count()
+}
+
+/// Computes the render-time vertical scroll offset: clamps the stored offset
+/// to the current content length, then adjusts it so the cursor row is
+/// visible and, so far as the viewport allows, so is everything its
+/// expansion revealed (`reveal_end`, from `build_diff_lines`) — not just the
+/// cursor row's own single line, which is all the previous version checked
+/// and is why expanding the bottom-most row on screen used to leave the
+/// newly revealed content unreachable.
+fn clamp_offset(
+    stored_offset: usize,
+    max_line_offset: usize,
+    selected_range: Option<(usize, usize)>,
+    reveal_end: usize,
+    inner_height: usize,
+) -> usize {
+    let mut offset = stored_offset.min(max_line_offset);
+    if let Some((start, _)) = selected_range {
+        if start < offset {
+            offset = start;
+        } else if inner_height > 0 && reveal_end > offset + inner_height {
+            // Scroll down far enough to reveal as much of the cursor row's
+            // content as fits, but never past `start` — if the revealed
+            // content is itself taller than the viewport, keep the row's
+            // own top in view rather than jumping straight to its tail.
+            offset = reveal_end.saturating_sub(inner_height).min(start);
+        }
+    }
+    offset
+}
+
+/// Renders an operation's group heading as a small bordered box with the
+/// label itself colored per `Operation` (via `layout::operation_style`,
+/// matching the requirement marker's own color), so a heading has enough
+/// visual weight to read as a section boundary rather than another content
+/// line. Degrades to a single unboxed line when the pane is too narrow for
+/// a box to make sense.
+fn group_heading_box(op: &Operation, width: usize, count: usize) -> Vec<Line<'static>> {
+    let border_style = layout::operation_style(op);
+    let label_style = border_style.add_modifier(Modifier::BOLD);
+    let label = heading_label(op, count);
+    let label_width = label.chars().count();
+
+    const BORDER_WIDTH: usize = 2; // the left and right border columns
+    const PREFIX_WIDTH: usize = 1; // the space between the border and the label
+    let min_width = BORDER_WIDTH + PREFIX_WIDTH + label_width;
+
+    if width < min_width {
+        return vec![Line::from(Span::styled(label, label_style))];
+    }
+
+    let inner_width = width - BORDER_WIDTH;
+    let pad = inner_width.saturating_sub(PREFIX_WIDTH + label_width);
+
+    vec![
+        Line::from(Span::styled(
+            format!("╭{}╮", "─".repeat(inner_width)),
+            border_style,
+        )),
+        Line::from(vec![
+            Span::styled("│ ", border_style),
+            Span::styled(label, label_style),
+            Span::raw(" ".repeat(pad)),
+            Span::styled("│", border_style),
+        ]),
+        Line::from(Span::styled(
+            format!("╰{}╯", "─".repeat(inner_width)),
+            border_style,
+        )),
+    ]
+}
+
+/// "Added Requirement" vs "Added Requirements" — a group heading names what
+/// it groups, pluralized by how many requirements it actually introduces.
+fn heading_label(op: &Operation, count: usize) -> String {
+    let noun = if count == 1 {
+        "Requirement"
+    } else {
+        "Requirements"
+    };
+    format!("{} {noun}", layout::heading_text(op))
+}
+
 /// Builds the tab bar as styled spans for `Block::title`, rather than using
 /// ratatui's `Tabs` widget, which renders into a `Rect` of its own and can't
 /// draw into a block's border (see design.md).
@@ -224,9 +380,9 @@ fn tab_bar_title(names: &[String], selected: usize) -> Line<'static> {
 
 fn focus_border_style(focused: bool) -> Style {
     if focused {
-        Style::new().add_modifier(Modifier::BOLD)
+        Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)
     } else {
-        Style::default()
+        Style::new().add_modifier(Modifier::DIM)
     }
 }
 
@@ -434,5 +590,238 @@ mod tests {
         assert!(!result.is_empty());
         assert!(result[0].style.add_modifier.contains(Modifier::DIM));
         assert!(result[0].content.starts_with("6-01-01"));
+    }
+
+    // --- build_diff_lines: group-heading spacers ---
+
+    fn req_row<'a>(name: &'a str, op: &'a crate::diff::Operation) -> DiffRow<'a> {
+        req_row_expanded(name, op, false)
+    }
+
+    fn req_row_expanded<'a>(
+        name: &'a str,
+        op: &'a crate::diff::Operation,
+        expanded: bool,
+    ) -> DiffRow<'a> {
+        DiffRow::Requirement {
+            name,
+            op,
+            expanded,
+            key: diff_row::RowKey {
+                capability: "cap".to_string(),
+                requirement: name.to_string(),
+                scenario: None,
+            },
+        }
+    }
+
+    fn scenario_row<'a>(
+        name: &'a str,
+        body: &'a crate::diff::Piece,
+        expanded: bool,
+    ) -> DiffRow<'a> {
+        DiffRow::Scenario {
+            name,
+            body,
+            expanded,
+            key: diff_row::RowKey {
+                capability: "cap".to_string(),
+                requirement: "Req".to_string(),
+                scenario: Some(name.to_string()),
+            },
+        }
+    }
+
+    fn unchanged_piece(text: &str) -> crate::diff::Piece {
+        crate::diff::Piece::Unchanged {
+            text: text.to_string(),
+        }
+    }
+
+    fn line_text(line: &Line<'static>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn no_blank_line_before_the_first_group_heading() {
+        let added = crate::diff::Operation::Added;
+        let rows = vec![DiffRow::GroupHeading(&added), req_row("A", &added)];
+        let (lines, _, _) = build_diff_lines(&rows, 40, 0);
+        // 3 box lines (top/content/bottom) + 1 requirement line, no leading blank.
+        assert_eq!(lines.len(), 4);
+        assert!(line_text(&lines[0]).starts_with('╭'));
+    }
+
+    #[test]
+    fn blank_line_and_box_appear_before_a_later_group_heading_and_cursor_range_accounts_for_them() {
+        let added = crate::diff::Operation::Added;
+        let modified = crate::diff::Operation::Modified;
+        let rows = vec![
+            DiffRow::GroupHeading(&added),
+            req_row("A", &added),
+            DiffRow::GroupHeading(&modified),
+            req_row("B", &modified),
+        ];
+
+        // Cursor on "B", the last row (index 3 in `rows`).
+        let (lines, selected_range, _) = build_diff_lines(&rows, 30, 3);
+
+        // box(A): top/content/bottom, req(A), blank, box(B): top/content/bottom, req(B)
+        assert_eq!(lines.len(), 9);
+        assert!(line_text(&lines[0]).starts_with('╭'));
+        assert!(line_text(&lines[4]).trim().is_empty());
+        assert!(line_text(&lines[5]).starts_with('╭'));
+        assert!(line_text(&lines[6]).contains("Modified"));
+        assert!(line_text(&lines[7]).starts_with('╰'));
+
+        // "B"'s rendered line is pushed later than a naive row-count would
+        // predict, because of the inserted spacer and the box's own border lines.
+        assert_eq!(selected_range, Some((8, 9)));
+    }
+
+    #[test]
+    fn group_heading_box_content_never_overflows_its_own_border() {
+        // "Modified Requirements" (plural) is the longest heading label; a
+        // width just wide enough for a box (but not comfortably so) must not
+        // let the content line (border + label) run past the box's own
+        // top/bottom border.
+        let modified = crate::diff::Operation::Modified;
+        for width in 10..=30 {
+            let lines = group_heading_box(&modified, width, 2);
+            let border_width = line_text(&lines[0]).chars().count();
+            for line in &lines {
+                assert!(
+                    line_text(line).chars().count() <= border_width,
+                    "content line wider than the box's own border at width {width}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn group_heading_falls_back_to_a_plain_line_when_too_narrow_for_a_box() {
+        let added = crate::diff::Operation::Added;
+        let lines = group_heading_box(&added, 6, 1);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(line_text(&lines[0]), "Added Requirement");
+    }
+
+    #[test]
+    fn group_heading_label_pluralizes_by_requirement_count() {
+        let added = crate::diff::Operation::Added;
+        assert_eq!(heading_label(&added, 1), "Added Requirement");
+        assert_eq!(heading_label(&added, 0), "Added Requirements");
+        assert_eq!(heading_label(&added, 2), "Added Requirements");
+    }
+
+    #[test]
+    fn requirement_count_after_counts_only_the_runs_own_top_level_requirements() {
+        let added = crate::diff::Operation::Added;
+        let modified = crate::diff::Operation::Modified;
+        let intro = unchanged_piece("intro");
+        let body = unchanged_piece("body");
+        let rows = vec![
+            DiffRow::GroupHeading(&added),
+            req_row_expanded("A", &added, true),
+            DiffRow::Intro { piece: &intro },
+            scenario_row("S1", &body, true),
+            DiffRow::Body { piece: &body },
+            req_row("B", &added),
+            DiffRow::GroupHeading(&modified),
+            req_row("C", &modified),
+        ];
+        assert_eq!(requirement_count_after(&rows, 0), 2); // A, B
+        assert_eq!(requirement_count_after(&rows, 6), 1); // C
+    }
+
+    // --- build_diff_lines: reveal_end (scroll-to-show-expanded-content bug) ---
+
+    #[test]
+    fn reveal_end_extends_through_an_expanded_requirements_intro_and_scenarios() {
+        let added = crate::diff::Operation::Added;
+        let intro = unchanged_piece("intro text");
+        let body1 = unchanged_piece("body one");
+        let rows = vec![
+            req_row_expanded("A", &added, true),
+            DiffRow::Intro { piece: &intro },
+            scenario_row("S1", &body1, false),
+            req_row("B", &added),
+        ];
+
+        // Cursor on "A" (index 0), which we just expanded.
+        let (_, selected_range, reveal_end) = build_diff_lines(&rows, 40, 0);
+
+        assert_eq!(selected_range, Some((0, 1)));
+        // Extends through the intro and scenario header (lines 1 and 2),
+        // stopping right before "B" starts at line 3.
+        assert_eq!(reveal_end, 3);
+    }
+
+    #[test]
+    fn reveal_end_extends_through_a_scenarios_body_but_stops_at_the_next_scenario() {
+        let added = crate::diff::Operation::Added;
+        let intro = unchanged_piece("intro");
+        let body1 = unchanged_piece("body one");
+        let body2 = unchanged_piece("body two");
+        let rows = vec![
+            req_row_expanded("A", &added, true),
+            DiffRow::Intro { piece: &intro },
+            scenario_row("S1", &body1, true),
+            DiffRow::Body { piece: &body1 },
+            scenario_row("S2", &body2, false),
+        ];
+
+        // Cursor on "S1" (index 2), which we just expanded.
+        let (_, selected_range, reveal_end) = build_diff_lines(&rows, 40, 2);
+
+        assert_eq!(selected_range, Some((2, 3)));
+        // Extends through its own body (line 3), stopping before "S2" at line 4
+        // — a sibling scenario is not part of what "S1" revealed.
+        assert_eq!(reveal_end, 4);
+    }
+
+    #[test]
+    fn reveal_end_matches_selected_range_end_when_nothing_new_was_revealed() {
+        let added = crate::diff::Operation::Added;
+        let rows = vec![req_row("A", &added), req_row("B", &added)];
+        let (_, selected_range, reveal_end) = build_diff_lines(&rows, 40, 0);
+        let (_, end) = selected_range.unwrap();
+        assert_eq!(reveal_end, end);
+    }
+
+    // --- clamp_offset: the actual scroll-position fix ---
+
+    #[test]
+    fn clamp_offset_scrolls_down_to_reveal_content_an_expansion_uncovered() {
+        // The cursor row (a single line at index 6) was already visible with
+        // offset 3 in a 5-line viewport ([3, 8)). Expanding it grew what
+        // follows out to line 15 — well past the viewport — which the old
+        // logic never saw, since it only checked the cursor row's own end (7).
+        let offset = clamp_offset(3, 20, Some((6, 7)), 15, 5);
+        // Scrolls down so the row's own top becomes the first visible line,
+        // showing as much of the newly revealed content as fits beneath it.
+        assert_eq!(offset, 6);
+    }
+
+    #[test]
+    fn clamp_offset_is_a_no_op_when_the_revealed_content_already_fits() {
+        let offset = clamp_offset(3, 20, Some((6, 7)), 8, 5);
+        assert_eq!(offset, 3);
+    }
+
+    #[test]
+    fn clamp_offset_still_scrolls_up_to_show_a_cursor_row_above_the_viewport() {
+        let offset = clamp_offset(10, 20, Some((2, 3)), 3, 5);
+        assert_eq!(offset, 2);
+    }
+
+    #[test]
+    fn clamp_offset_prioritizes_the_cursor_rows_own_top_when_revealed_content_cant_fully_fit() {
+        // The cursor row is the very first row, and the block it reveals is
+        // much taller than the viewport. There's nowhere to scroll without
+        // hiding the row's own header, so the offset stays put — the rest
+        // becomes reachable as the cursor moves further into the block.
+        let offset = clamp_offset(0, 20, Some((0, 1)), 20, 5);
+        assert_eq!(offset, 0);
     }
 }
