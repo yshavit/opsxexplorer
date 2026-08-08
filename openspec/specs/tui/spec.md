@@ -13,23 +13,28 @@ The system SHALL render its terminal UI as two side-by-side panes: a left pane a
 - **WHEN** the application starts
 - **THEN** the screen is split into a left pane and a right pane
 
-### Requirement: Right pane is a placeholder
-The right pane SHALL render as an empty placeholder. It SHALL NOT display change contents, diffs, or any other content.
-
-#### Scenario: right pane on launch
-- **WHEN** the application is running
-- **THEN** the right pane shows no change content, regardless of what is selected in the left pane
-
-### Requirement: Left pane holds input focus
-The left pane SHALL hold keyboard input focus for the duration of the application's runtime. There SHALL be no mechanism to move focus to the right pane.
+### Requirement: Focus moves between the two panes
+Exactly one pane SHALL hold keyboard input focus at any time. The left pane SHALL hold focus when the application starts. The system SHALL move focus to the other pane when the user presses Tab, and SHALL indicate which pane currently holds focus visually. A key pressed while a pane holds focus SHALL be handled by that pane, except for keys the application handles globally.
 
 #### Scenario: application launches
 - **WHEN** the application starts
-- **THEN** keyboard input is directed to the left pane
+- **THEN** the left pane holds keyboard input focus, and this is visually indicated
+
+#### Scenario: user presses Tab
+- **WHEN** the user presses Tab while the left pane holds focus
+- **THEN** focus moves to the right pane and the focus indication follows it
+
+#### Scenario: user presses Tab again
+- **WHEN** the user presses Tab while the right pane holds focus
+- **THEN** focus moves back to the left pane
 
 #### Scenario: user presses any key
-- **WHEN** the user presses a key while the application is running
-- **THEN** the key is handled by the left pane, since no other pane can hold focus
+- **WHEN** the user presses a key that both panes bind, while one of them holds focus
+- **THEN** the key is handled by the pane that holds focus, and the other pane's state is unchanged
+
+#### Scenario: global keys work from either pane
+- **WHEN** the user presses a key the application handles globally, whichever pane holds focus
+- **THEN** it takes effect regardless of which pane is focused
 
 ### Requirement: Ctrl+Q exits the application
 The system SHALL exit when the user presses Ctrl+Q.
