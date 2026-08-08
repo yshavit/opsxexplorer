@@ -1,5 +1,30 @@
 # Brief: `spec-model` capability — parse and load OpenSpec spec files
 
+> ## ⚠ SUPERSEDED — do not treat this file as authoritative
+>
+> This brief has been turned into an OpenSpec change. **The source of truth is
+> now `openspec/changes/spec-model/`** (proposal.md, specs/, design.md,
+> tasks.md). Once that change is archived, this file should be reduced to a
+> pointer at `openspec/changes/archive/<date>-spec-model/`, and
+> `notes/spec-diff/` deleted once all three changes in the chain have landed.
+>
+> Three decisions in this brief were **deliberately reversed** while writing the
+> proposal, and are struck through below. They are called out here because they
+> have already misled readers once:
+>
+> 1. **Byte-faithful bodies** — dropped. Bodies are re-serialised markdown,
+>    normalised identically on both sides. Byte-identity with the file is
+>    explicitly not promised.
+> 2. **Line scanning vs. a parser** — settled on `mdq`'s `md_elem`, not the line
+>    scanning this brief leaned toward. A prefix scanner misparses heading-shaped
+>    lines inside fenced code blocks, which matters because opsxexplorer reads
+>    arbitrary OpenSpec repos.
+> 3. **Intro "absent" vs "present but empty"** — markdown cannot express the
+>    difference, so the model does not either. See design.md.
+>
+> Everything else here — the file-layout survey, the `change-model` API gap, the
+> loader edge cases, the validation-data table — was carried through intact.
+
 > Chain position: **1 of 3**. Read → compare → render.
 > 1. **`spec-model`** (this file) — parse a spec.md into requirements/scenarios; load both sides for a change.
 > 2. `spec-diff` (`02-spec-diff.md`) — compare a delta requirement against its base.
@@ -101,21 +126,41 @@ Parser requirements that are easy to get wrong:
   and scenarios (which the UI wants), that content must be read from the **base
   spec**, not the delta. This is a load-time concern, see §2.
 - **MODIFIED entries may omit the intro block** and may list only a subset of
-  scenarios. Preserve the distinction between "intro absent" and "intro present
-  but empty" — change 2 depends on it.
+  scenarios. ~~Preserve the distinction between "intro absent" and "intro
+  present but empty" — change 2 depends on it.~~ **REVERSED:** markdown cannot
+  express that difference (the only signal is a blank line after the heading,
+  which is formatting), and no requirement in this repo exhibits either shape —
+  all 49 have intro text. Both parse to an empty intro. The scenario-subset
+  point stands: scenarios are *named*, so an unlisted one is observably
+  unmentioned; an unnamed intro region has no mention that can be absent.
 - **`## Requirements` appears only in main specs**, never in deltas; delta
   operation headers never appear in main specs.
-- Scenario bodies are bullet lists but should be kept as raw text lines. Do not
-  normalise, reflow, or strip markdown — change 2 diffs this text and change 3
-  renders it, and both need byte-faithful source.
+- ~~Scenario bodies are bullet lists but should be kept as raw text lines. Do
+  not normalise, reflow, or strip markdown — change 2 diffs this text and change
+  3 renders it, and both need byte-faithful source.~~ **REVERSED:** bodies are
+  mdq's re-serialisation of the parsed tree — no content lost, no re-wrapping
+  (`text_width: None`), but not byte-identical to the file. What the consumers
+  actually need is that *both sides get identical treatment*, so an unedited
+  requirement compares equal; byte-identity is strictly stronger than that.
+  Change 2 and change 3 must not assume they can map offsets back onto the file.
 - Requirement and scenario names are the text after `### Requirement: ` /
   `#### Scenario: `. Names are the **join key** used by change 2.
 
-Whether to parse with `pulldown-cmark` or with line scanning is open. Line
+~~Whether to parse with `pulldown-cmark` or with line scanning is open. Line
 scanning is likely sufficient and simpler given the rigidly fixed heading
 grammar, and it makes byte-faithful body preservation trivial; `pulldown-cmark`
 is already a dependency but earns its keep more in change 3. Decide in design.md
-with the usual rejected-alternative note.
+with the usual rejected-alternative note.~~
+
+**RESOLVED — neither.** `mdq`'s `md_elem` gives a hierarchical section tree
+(`Section { depth, title, body }`) in which a `##` section contains its `###`
+sections, which contain their `####` sections — the OpenSpec shape exactly, so
+Requirements → Requirement → Scenario needs no grouping fold. Line scanning was
+rejected because a prefix match cannot tell a real heading from a heading-shaped
+line inside a fenced code block, and opsxexplorer reads *arbitrary* OpenSpec
+repos, not just this one. `markdown`/mdast was the runner-up — it is the only
+option keeping byte offsets — and remains the documented escape hatch, since
+`mdq` is built on it and no `mdq` type crosses the module boundary.
 
 Malformed input (a scenario before any requirement, an unknown `## FOO
 Requirements` header, a `- FROM:` with no `- TO:`) should surface as a
