@@ -370,10 +370,11 @@ mod tests {
                 "Diff base for an active change is the live spec of record",
                 "Diff base for an archived change is the commit before the directory first appears",
                 "Resolved diff base travels with its change",
+                "Both sides of a change's diff are reachable from the resolved change",
             ]
         );
         let total_scenarios: usize = spec.requirements.iter().map(|r| r.scenarios.len()).sum();
-        assert_eq!(total_scenarios, 7);
+        assert_eq!(total_scenarios, 11);
     }
 
     #[test]
