@@ -123,7 +123,9 @@ An intro block that the delta does not mention renders the spec of record's text
 - **THEN** the intro block does not carry the unmentioned marker and its text is not de-emphasised
 
 ### Requirement: Changed content is shown as one inline word-level diff, not as before-and-after blocks
-For a piece whose content changed, the pane SHALL render a single reflowed passage in which deleted and inserted runs are interleaved in place, each styled distinctly from unchanged text and from each other, rather than rendering the spec of record's text and the delta's text as two separate blocks. Deleted and inserted text SHALL both be visible in that one passage.
+For a piece whose content changed and whose difference is reported as word-level runs, the pane SHALL render a single reflowed passage in which deleted and inserted runs are interleaved in place, each styled distinctly from unchanged text and from each other, rather than rendering the spec of record's text and the delta's text as two separate blocks. Deleted and inserted text SHALL both be visible in that one passage.
+
+This applies to every piece reported with runs. A piece reported instead as a wholesale replacement — because the two texts are too dissimilar for an inline reading to help — is rendered as stacked before-and-after text (see "A wholesale replacement is shown as stacked before-and-after text"). The pane SHALL NOT make that judgement itself: it renders whichever form the piece was reported in.
 
 #### Scenario: a sentence appended to a long paragraph
 - **WHEN** a changed piece is the spec of record's text with one further sentence appended
@@ -134,8 +136,29 @@ For a piece whose content changed, the pane SHALL render a single reflowed passa
 - **THEN** those words are shown as a deletion and an insertion in place, with the surrounding text shown unchanged and shown only once
 
 #### Scenario: both sides are visible
-- **WHEN** a piece's content changed
+- **WHEN** a piece's content is reported with runs
 - **THEN** both the removed text and the added text are visible in the rendered passage
+
+### Requirement: A wholesale replacement is shown as stacked before-and-after text
+A piece reported as a wholesale replacement has no runs to interleave, and the two texts are by construction too dissimilar for interleaving to have helped. The pane SHALL render such a piece as the spec of record's text styled as a deletion, followed by the delta's text styled as an insertion, each beginning on its own line so the two read as consecutive passages rather than as one run-on sentence. Both texts SHALL be shown in full.
+
+The two texts SHALL carry the same deletion and insertion styling that a deleted run and an inserted run carry inside an inline diff, so that the colours mean the same thing everywhere in the pane. Each text SHALL wrap to the pane width under the same rules as any other content, and the piece SHALL carry the same gutter marker as any other changed piece, since a replacement is a modification and not a removal.
+
+#### Scenario: a replaced piece renders both texts
+- **WHEN** a piece is reported as a wholesale replacement
+- **THEN** the spec of record's text is shown in full styled as a deletion, and the delta's text is shown in full styled as an insertion
+
+#### Scenario: the two texts do not run together
+- **WHEN** a replaced piece is rendered
+- **THEN** the delta's text begins on a line of its own rather than continuing the line the spec of record's text ended on
+
+#### Scenario: a replaced piece is marked as modified
+- **WHEN** a replaced piece is rendered
+- **THEN** its gutter marker is the one a changed piece carries, not the one a removed piece carries
+
+#### Scenario: a long replaced piece wraps
+- **WHEN** either text of a replaced piece is wider than the pane
+- **THEN** it wraps to the pane width, keeping its styling across the break, with no horizontal scrolling required
 
 ### Requirement: Content wraps to the pane width and is never scrolled horizontally
 The right pane SHALL wrap content to its available width rather than clipping it or offering horizontal scrolling, so that no part of a requirement's text is unreachable at any pane width. Wrapping SHALL preserve the styling of the text it breaks, including a word-diff run that straddles a wrap point. A row that wraps SHALL have its continuation lines indented to align beneath the start of the row's own text, and the gutter column SHALL be left blank on continuation lines so that a marker is never mistaken for a second entry.

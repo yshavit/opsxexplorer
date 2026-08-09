@@ -94,7 +94,7 @@ fn piece_marker(piece: &Piece) -> (&'static str, Style) {
         Piece::Unchanged { .. } => (" ", Style::default()),
         Piece::Added { .. } => ("+", added_style()),
         Piece::Deleted { .. } => ("-", removed_style()),
-        Piece::Changed { .. } => ("~", modified_style()),
+        Piece::Changed { .. } | Piece::Replaced { .. } => ("~", modified_style()),
         Piece::Unmentioned { .. } => ("?", Style::new().add_modifier(Modifier::DIM)),
     }
 }
@@ -203,6 +203,11 @@ fn piece_spans(piece: &Piece) -> Vec<Span<'static>> {
         Piece::Deleted { base } => vec![Span::styled(base.clone(), removed_style())],
         Piece::Unmentioned { base } => vec![Span::raw(base.clone())],
         Piece::Changed { base, delta, runs } => changed_spans(base, delta, runs),
+        Piece::Replaced { base, delta } => vec![
+            Span::styled(base.clone(), removed_style()),
+            Span::raw("\n"),
+            Span::styled(delta.clone(), added_style()),
+        ],
     }
 }
 
@@ -345,6 +350,19 @@ mod tests {
             .0,
             "~"
         );
+        // A replacement is a modification, not a removal: it carries the
+        // same marker and style as `Changed`, not `Deleted`'s.
+        assert_eq!(
+            piece_marker(&Piece::Replaced {
+                base: "x".to_string(),
+                delta: "y".to_string(),
+            }),
+            piece_marker(&Piece::Changed {
+                base: "x".to_string(),
+                delta: "y".to_string(),
+                runs: vec![],
+            })
+        );
         let (marker, style) = piece_marker(&Piece::Unmentioned {
             base: "x".to_string(),
         });
@@ -430,6 +448,120 @@ mod tests {
         let spans = changed_spans(base, "", &runs);
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].content.as_ref(), "");
+    }
+
+    #[test]
+    fn replaced_piece_renders_both_texts_in_full_on_separate_lines_with_deletion_and_insertion_styling()
+     {
+        let piece = Piece::Replaced {
+            base: "the old text in full".to_string(),
+            delta: "the new text in full".to_string(),
+        };
+        let spans = piece_spans(&piece);
+
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "the old text in full\nthe new text in full");
+
+        // The delta text begins on a line of its own: a raw "\n" separates
+        // the two, matching wrap.rs's forced-break token.
+        let newline_index = spans
+            .iter()
+            .position(|s| s.content.as_ref() == "\n")
+            .expect("expected a raw newline span between the two texts");
+
+        let before: String = spans[..newline_index]
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        let after: String = spans[newline_index + 1..]
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(before, "the old text in full");
+        assert_eq!(after, "the new text in full");
+
+        assert!(
+            spans[..newline_index]
+                .iter()
+                .all(|s| s.style == removed_style())
+        );
+        assert!(
+            spans[newline_index + 1..]
+                .iter()
+                .all(|s| s.style == added_style())
+        );
+    }
+
+    #[test]
+    fn replaced_piece_wraps_and_keeps_styling_across_the_break() {
+        let piece = Piece::Replaced {
+            base: "one two three four five six seven".to_string(),
+            delta: "eight nine ten eleven twelve thirteen".to_string(),
+        };
+        let row = DiffRow::Body { piece: &piece };
+        let width = 10;
+        let lines = row_lines(&row, width);
+
+        assert!(
+            lines.len() > 2,
+            "expected both texts to wrap onto several lines"
+        );
+
+        // No rendered line exceeds the pane width — no horizontal scrolling
+        // is required to read a replacement.
+        for line in &lines {
+            let line_len: usize = line.spans.iter().flat_map(|s| s.content.chars()).count();
+            assert!(
+                line_len <= width,
+                "line exceeds pane width {width}: {line:?}"
+            );
+        }
+
+        // Every word carries the style of the text it came from, wrap or no
+        // wrap. `base` and `delta` share no words, so this also confirms the
+        // wrap didn't garble which word came from which side.
+        for line in &lines {
+            for span in &line.spans {
+                let word = span.content.trim();
+                if word.is_empty() {
+                    continue;
+                }
+                if piece_base_words().contains(&word) {
+                    assert_eq!(span.style, removed_style(), "base word {word:?} mis-styled");
+                } else if piece_delta_words().contains(&word) {
+                    assert_eq!(span.style, added_style(), "delta word {word:?} mis-styled");
+                }
+            }
+        }
+
+        // The two texts don't run together: no line mixes a base word with a
+        // delta word, and every base-word line precedes every delta-word line.
+        let last_base_line = lines.iter().rposition(|l| {
+            l.spans
+                .iter()
+                .any(|s| piece_base_words().contains(&s.content.trim()))
+        });
+        let first_delta_line = lines.iter().position(|l| {
+            l.spans
+                .iter()
+                .any(|s| piece_delta_words().contains(&s.content.trim()))
+        });
+        let (last_base_line, first_delta_line) = (
+            last_base_line.expect("expected at least one base word"),
+            first_delta_line.expect("expected at least one delta word"),
+        );
+        assert!(
+            last_base_line < first_delta_line,
+            "expected base text to fully precede delta text: last_base_line={last_base_line} first_delta_line={first_delta_line}"
+        );
+    }
+
+    fn piece_base_words() -> [&'static str; 7] {
+        ["one", "two", "three", "four", "five", "six", "seven"]
+    }
+
+    fn piece_delta_words() -> [&'static str; 6] {
+        ["eight", "nine", "ten", "eleven", "twelve", "thirteen"]
     }
 
     #[test]

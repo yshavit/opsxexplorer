@@ -32,6 +32,13 @@ pub enum Piece {
         delta: String,
         runs: Vec<Run>,
     },
+    /// The two texts are too dissimilar for an inline diff to read better
+    /// than the two texts in turn (see the `diff-legibility` change's
+    /// design.md). Carries both texts in full and no runs.
+    Replaced {
+        base: String,
+        delta: String,
+    },
     Added {
         delta: String,
     },

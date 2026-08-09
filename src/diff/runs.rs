@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use similar::{ChangeTag, TextDiff};
 
 use crate::diff::model::Run;
@@ -5,7 +7,9 @@ use crate::diff::model::Run;
 /// Word-level diff runs between `base` and `delta`, as byte-offset ranges
 /// into the two strings exactly as supplied — no trimming, whitespace
 /// collapsing, re-wrapping or other normalisation (see design.md). Adjacent
-/// changes sharing a tag are merged into a single run.
+/// changes sharing a tag are merged into a single run, and a whitespace-only
+/// equal run with a change on both sides is coalesced away rather than left
+/// to anchor the diff (see the `diff-legibility` change's design.md).
 pub(crate) fn runs(base: &str, delta: &str) -> Vec<Run> {
     let diff = TextDiff::from_words(base, delta);
     let mut out: Vec<Run> = Vec::new();
@@ -42,7 +46,97 @@ pub(crate) fn runs(base: &str, delta: &str) -> Vec<Run> {
         push_merging(&mut out, run);
     }
 
+    coalesce_whitespace_anchors(base, out)
+}
+
+/// An `Equal` run whose text is entirely whitespace, contains no line break,
+/// and has a non-`Equal` run on both sides carries no information as an
+/// anchor: dissolving it lets its span be reported as one deletion and one
+/// insertion instead of two of each. A run at either end of the sequence has
+/// no change on that side, so it is never dissolved. A line break is excluded
+/// because line structure is meaningful in this content (a scenario body's
+/// `WHEN`/`THEN` bullets); dissolving it could span one deletion across two
+/// bullets.
+fn is_whitespace_anchor(base: &str, runs: &[Run], i: usize) -> bool {
+    let Run::Equal { base: b, .. } = &runs[i] else {
+        return false;
+    };
+    if i == 0 || i + 1 == runs.len() {
+        return false;
+    }
+    let text = &base[b.clone()];
+    !text.is_empty() && !text.contains('\n') && text.chars().all(char::is_whitespace)
+}
+
+/// Removes whitespace-only anchor runs, coalescing each resulting span into a
+/// single `Delete` of its base text followed by a single `Insert` of its
+/// delta text. Works at region granularity — splitting an individual equal
+/// run into a delete/insert pair and relying on adjacent same-tag merging
+/// does not work, since nothing then ends up adjacent to a same-tag neighbour
+/// (see design.md, Decisions). This can only ever destroy `Equal` runs, never
+/// fabricate one, so it preserves reconstruction: base order among deletes
+/// and delta order among inserts are both unchanged.
+fn coalesce_whitespace_anchors(base: &str, runs: Vec<Run>) -> Vec<Run> {
+    let n = runs.len();
+    let survives = |runs: &[Run], i: usize| {
+        matches!(runs[i], Run::Equal { .. }) && !is_whitespace_anchor(base, runs, i)
+    };
+
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < n {
+        if survives(&runs, i) {
+            out.push(runs[i].clone());
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < n && !survives(&runs, i) {
+            i += 1;
+        }
+        out.extend(coalesce_span(&runs[start..i]));
+    }
     out
+}
+
+/// Merges a span containing no surviving anchor into at most one `Delete`
+/// (covering every base-advancing run in the span) followed by at most one
+/// `Insert` (covering every delta-advancing run). The runs within a span are
+/// contiguous in each side's positions by construction, so the merged range
+/// is simply the min start to the max end.
+fn coalesce_span(span: &[Run]) -> Vec<Run> {
+    let mut base_range: Option<Range<usize>> = None;
+    let mut delta_range: Option<Range<usize>> = None;
+
+    for run in span {
+        match run {
+            Run::Equal { base, delta } => {
+                extend(&mut base_range, base);
+                extend(&mut delta_range, delta);
+            }
+            Run::Delete { base } => extend(&mut base_range, base),
+            Run::Insert { delta } => extend(&mut delta_range, delta),
+        }
+    }
+
+    let mut out = Vec::new();
+    if let Some(base) = base_range {
+        out.push(Run::Delete { base });
+    }
+    if let Some(delta) = delta_range {
+        out.push(Run::Insert { delta });
+    }
+    out
+}
+
+fn extend(acc: &mut Option<Range<usize>>, r: &Range<usize>) {
+    match acc {
+        None => *acc = Some(r.clone()),
+        Some(a) => {
+            a.start = a.start.min(r.start);
+            a.end = a.end.max(r.end);
+        }
+    }
 }
 
 /// Extends the last run in place when it shares a tag and abuts the new one,
@@ -109,6 +203,22 @@ mod tests {
             delta,
             "delta did not reconstruct for base={base:?} delta={delta:?}"
         );
+        assert_equal_runs_address_identical_text(base, delta, &runs);
+    }
+
+    /// Reconstruction alone cannot catch a mis-aligned equal run: it only
+    /// checks that concatenating the right spans reproduces each side, not
+    /// that an `Equal` run's two spans actually agree with each other.
+    fn assert_equal_runs_address_identical_text(base: &str, delta: &str, runs: &[Run]) {
+        for run in runs {
+            if let Run::Equal { base: b, delta: d } = run {
+                assert_eq!(
+                    &base[b.clone()],
+                    &delta[d.clone()],
+                    "equal run addressed different text on each side for base={base:?} delta={delta:?}: {run:?}"
+                );
+            }
+        }
     }
 
     // --- 2.2: reconstruction invariant ---
@@ -213,5 +323,74 @@ mod tests {
             "expected exactly one insert run, got {runs:?}"
         );
         assert_reconstructs(base, &delta);
+    }
+
+    // --- diff-legibility 2.4: whitespace no longer anchors a diff ---
+
+    #[test]
+    fn whitespace_between_two_word_edits_does_not_anchor_the_diff() {
+        let base = "- **WHEN** the user quits the application via Ctrl+Q";
+        let delta = "- **WHEN** the user quits the application by pressing `q`";
+        let runs = runs(base, delta);
+
+        let deletes: Vec<&Run> = runs.iter().filter(|r| matches!(r, Run::Delete { .. })).collect();
+        let inserts: Vec<&Run> = runs.iter().filter(|r| matches!(r, Run::Insert { .. })).collect();
+        assert_eq!(deletes.len(), 1, "expected exactly one delete run, got {runs:?}");
+        assert_eq!(inserts.len(), 1, "expected exactly one insert run, got {runs:?}");
+
+        let Run::Delete { base: b } = deletes[0] else {
+            unreachable!()
+        };
+        let Run::Insert { delta: d } = inserts[0] else {
+            unreachable!()
+        };
+        assert_eq!(&base[b.clone()], "via Ctrl+Q");
+        assert_eq!(&delta[d.clone()], "by pressing `q`");
+
+        assert_reconstructs(base, delta);
+    }
+
+    // --- diff-legibility 2.5: non-whitespace equal text still anchors ---
+
+    #[test]
+    fn non_whitespace_equal_text_still_anchors_the_diff() {
+        let base = "a b c d e";
+        let delta = "a X c Y e";
+        let runs = runs(base, delta);
+
+        assert!(
+            runs.iter()
+                .any(|r| matches!(r, Run::Equal { base: b, .. } if base[b.clone()].contains('c'))),
+            "expected \"c\" to still anchor the diff, got {runs:?}"
+        );
+        let deletes: Vec<&Run> = runs.iter().filter(|r| matches!(r, Run::Delete { .. })).collect();
+        let inserts: Vec<&Run> = runs.iter().filter(|r| matches!(r, Run::Insert { .. })).collect();
+        assert_eq!(deletes.len(), 2, "expected two distinct deletes, got {runs:?}");
+        assert_eq!(inserts.len(), 2, "expected two distinct inserts, got {runs:?}");
+
+        assert_reconstructs(base, delta);
+    }
+
+    // --- diff-legibility 2.6: a whitespace anchor containing a newline still anchors ---
+
+    #[test]
+    fn whitespace_anchor_containing_a_newline_still_anchors() {
+        let base = "- **WHEN** a\n- **THEN** b";
+        let delta = "- **WHEN** x\n- **THEN** y";
+        let runs = runs(base, delta);
+
+        // The scenario body's WHEN and THEN lines both change; the newline
+        // between them must still separate the two into distinct edits
+        // rather than collapsing into one deletion spanning both bullets.
+        assert!(
+            runs.iter().any(|r| matches!(r, Run::Equal { base: b, .. } if base[b.clone()].contains('\n'))),
+            "expected the newline-containing equal run to still anchor, got {runs:?}"
+        );
+        let deletes: Vec<&Run> = runs.iter().filter(|r| matches!(r, Run::Delete { .. })).collect();
+        let inserts: Vec<&Run> = runs.iter().filter(|r| matches!(r, Run::Insert { .. })).collect();
+        assert_eq!(deletes.len(), 2, "expected two distinct deletes, got {runs:?}");
+        assert_eq!(inserts.len(), 2, "expected two distinct inserts, got {runs:?}");
+
+        assert_reconstructs(base, delta);
     }
 }
