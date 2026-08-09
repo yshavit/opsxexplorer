@@ -16,7 +16,7 @@ use ratatui::widgets::{
 };
 
 use crate::changes::Changes;
-use crate::diff::Operation;
+use crate::diff::{Operation, Piece};
 
 use app::{App, Focus, PaneView};
 use diff_row::DiffRow;
@@ -184,6 +184,7 @@ fn render_diff_tabs(
 
     let inner_width = inner.width as usize;
     let inner_height = inner.height as usize;
+    app.set_right_pane_width(inner_width);
     let cursor = app.cursor();
 
     let (mut lines, selected_range, reveal_end) =
@@ -327,7 +328,7 @@ fn build_diff_lines(
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut selected_range: Option<(usize, usize)> = None;
     let mut reveal_end = 0;
-    let mut seen_group_heading = false;
+    let mut seen_heading = false;
     let mut in_cursor_block = false;
     let mut cursor_is_requirement = false;
 
@@ -336,7 +337,12 @@ fn build_diff_lines(
             let leaves_block = match row {
                 DiffRow::Intro { .. } | DiffRow::Body { .. } => false,
                 DiffRow::Scenario { .. } => !cursor_is_requirement,
-                DiffRow::Requirement { .. } | DiffRow::GroupHeading(_) | DiffRow::Notice(_) => true,
+                DiffRow::Requirement { .. }
+                | DiffRow::GroupHeading(_)
+                | DiffRow::Notice(_)
+                | DiffRow::PurposeHeading(_)
+                | DiffRow::PurposeFull(_)
+                | DiffRow::Purpose { .. } => true,
             };
             if leaves_block {
                 reveal_end = lines.len();
@@ -344,14 +350,22 @@ fn build_diff_lines(
             }
         }
 
-        let row_lines = if let DiffRow::GroupHeading(op) = row {
-            if seen_group_heading {
-                lines.push(Line::default());
+        let row_lines = match row {
+            DiffRow::GroupHeading(op) => {
+                if seen_heading {
+                    lines.push(Line::default());
+                }
+                seen_heading = true;
+                group_heading_box(op, width, requirement_count_after(rows, i))
             }
-            seen_group_heading = true;
-            group_heading_box(op, width, requirement_count_after(rows, i))
-        } else {
-            layout::row_lines(row, width)
+            DiffRow::PurposeHeading(piece) => {
+                if seen_heading {
+                    lines.push(Line::default());
+                }
+                seen_heading = true;
+                purpose_heading_box(piece, width)
+            }
+            _ => layout::row_lines(row, width),
         };
 
         let start = lines.len();
@@ -420,9 +434,29 @@ fn clamp_offset(
 /// line. Degrades to a single unboxed line when the pane is too narrow for
 /// a box to make sense.
 fn group_heading_box(op: &Operation, width: usize, count: usize) -> Vec<Line<'static>> {
-    let border_style = layout::operation_style(op);
+    let style = layout::operation_style(op);
+    heading_box(&heading_label(op, count), style, width)
+}
+
+/// Renders the purpose comparison's heading, styled and boxed the same way a
+/// requirement-group heading is: "Added Purpose" (`Piece::Added`) or
+/// "Modified Purpose" (`Piece::Changed`/`Piece::Replaced`).
+fn purpose_heading_box(piece: &Piece, width: usize) -> Vec<Line<'static>> {
+    let (label, style) = match piece {
+        Piece::Added { .. } => ("Added Purpose", layout::added_style()),
+        _ => ("Modified Purpose", layout::modified_style()),
+    };
+    heading_box(label, style, width)
+}
+
+/// Draws a heading as a small bordered box, the label colored with `style`,
+/// degrading to a single unboxed line when `width` is too narrow for a box
+/// to make sense. Shared by `group_heading_box` and `purpose_heading_box` so
+/// the two headings' box-drawing and degrade behavior can never drift apart
+/// (see design.md).
+fn heading_box(label: &str, style: Style, width: usize) -> Vec<Line<'static>> {
+    let border_style = style;
     let label_style = border_style.add_modifier(Modifier::BOLD);
-    let label = heading_label(op, count);
     let label_width = label.chars().count();
 
     const BORDER_WIDTH: usize = 2; // the left and right border columns
@@ -430,7 +464,7 @@ fn group_heading_box(op: &Operation, width: usize, count: usize) -> Vec<Line<'st
     let min_width = BORDER_WIDTH + PREFIX_WIDTH + label_width;
 
     if width < min_width {
-        return vec![Line::from(Span::styled(label, label_style))];
+        return vec![Line::from(Span::styled(label.to_string(), label_style))];
     }
 
     let inner_width = width - BORDER_WIDTH;
@@ -443,7 +477,7 @@ fn group_heading_box(op: &Operation, width: usize, count: usize) -> Vec<Line<'st
         )),
         Line::from(vec![
             Span::styled("│ ", border_style),
-            Span::styled(label, label_style),
+            Span::styled(label.to_string(), label_style),
             Span::raw(" ".repeat(pad)),
             Span::styled("│", border_style),
         ]),
@@ -787,10 +821,9 @@ mod tests {
             name,
             op,
             expanded,
-            key: diff_row::RowKey {
+            key: diff_row::RowKey::Requirement {
                 capability: "cap".to_string(),
                 requirement: name.to_string(),
-                scenario: None,
             },
         }
     }
@@ -804,10 +837,10 @@ mod tests {
             name,
             body,
             expanded,
-            key: diff_row::RowKey {
+            key: diff_row::RowKey::Scenario {
                 capability: "cap".to_string(),
                 requirement: "Req".to_string(),
-                scenario: Some(name.to_string()),
+                scenario: name.to_string(),
             },
         }
     }
@@ -892,6 +925,74 @@ mod tests {
         assert_eq!(heading_label(&added, 1), "Added Requirement");
         assert_eq!(heading_label(&added, 0), "Added Requirements");
         assert_eq!(heading_label(&added, 2), "Added Requirements");
+    }
+
+    // --- purpose_heading_box (render-purpose 4.4) ---
+
+    #[test]
+    fn purpose_heading_box_labels_and_colors_an_insertion_as_added() {
+        let piece = crate::diff::Piece::Added {
+            delta: "x".to_string(),
+        };
+        let lines = purpose_heading_box(&piece, 40);
+        assert!(line_text(&lines[1]).contains("Added Purpose"));
+        assert_eq!(lines[0].spans[0].style, layout::added_style());
+    }
+
+    #[test]
+    fn purpose_heading_box_labels_and_colors_a_changed_comparison_as_modified() {
+        let piece = crate::diff::Piece::Changed {
+            base: "a".to_string(),
+            delta: "b".to_string(),
+            runs: vec![],
+        };
+        let lines = purpose_heading_box(&piece, 40);
+        assert!(line_text(&lines[1]).contains("Modified Purpose"));
+        assert_eq!(lines[0].spans[0].style, layout::modified_style());
+    }
+
+    #[test]
+    fn purpose_heading_box_labels_and_colors_a_replaced_comparison_as_modified() {
+        let piece = crate::diff::Piece::Replaced {
+            base: "a".to_string(),
+            delta: "b".to_string(),
+        };
+        let lines = purpose_heading_box(&piece, 40);
+        assert!(line_text(&lines[1]).contains("Modified Purpose"));
+        assert_eq!(lines[0].spans[0].style, layout::modified_style());
+    }
+
+    #[test]
+    fn purpose_heading_falls_back_to_a_plain_line_when_too_narrow_for_a_box() {
+        // Same rule `group_heading_falls_back_...` exercises for
+        // `group_heading_box`: both go through the shared `heading_box`
+        // helper, so a width one column short of the label's own minimum
+        // (border + prefix + label) degrades exactly the same way.
+        let piece = crate::diff::Piece::Added {
+            delta: "x".to_string(),
+        };
+        let lines = purpose_heading_box(&piece, 5);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(line_text(&lines[0]), "Added Purpose");
+    }
+
+    #[test]
+    fn purpose_heading_box_content_never_overflows_its_own_border() {
+        let piece = crate::diff::Piece::Changed {
+            base: "a".to_string(),
+            delta: "b".to_string(),
+            runs: vec![],
+        };
+        for width in 10..=30 {
+            let lines = purpose_heading_box(&piece, width);
+            let border_width = line_text(&lines[0]).chars().count();
+            for line in &lines {
+                assert!(
+                    line_text(line).chars().count() <= border_width,
+                    "content line wider than the box's own border at width {width}"
+                );
+            }
+        }
     }
 
     #[test]

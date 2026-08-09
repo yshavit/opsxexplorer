@@ -79,4 +79,7 @@ pub struct CapabilityDiff {
     pub capability: String,
     pub requirements: Vec<RequirementDiff>,
     pub errors: Vec<DiffError>,
+    /// The capability's purpose comparison, if there is anything to report:
+    /// only ever `Added`, `Changed` or `Replaced` (see `diff()`).
+    pub purpose: Option<Piece>,
 }

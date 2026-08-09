@@ -136,6 +136,40 @@ pub fn diff(capability: &str, pair: &SpecPair) -> CapabilityDiff {
         capability: capability.to_string(),
         requirements,
         errors,
+        purpose: purpose_diff(pair),
+    }
+}
+
+/// Computes the capability's purpose comparison: `None` if the delta carries
+/// no purpose section or restates the spec of record's purpose unchanged;
+/// `Piece::Added` for an insertion (the spec of record's purpose is empty,
+/// or there is no spec of record at all); otherwise the same
+/// changed-vs-replaced judgement used for a requirement's intro. An
+/// insertion is detected directly (an empty base) rather than routed through
+/// `compare::changed_or_unchanged`, which never produces `Piece::Added` — it
+/// treats an empty base exactly like an ordinary edit, all-`Insert` runs and
+/// all (see spec-diff's "purpose is compared... using the same
+/// changed-vs-replaced judgement" requirement, which reports an insertion as
+/// its own outcome distinct from a changed/replaced comparison).
+fn purpose_diff(pair: &SpecPair) -> Option<Piece> {
+    let delta_purpose = pair.delta.purpose.as_deref()?;
+    let base_purpose = pair
+        .base
+        .as_ref()
+        .and_then(|s| s.purpose.as_deref())
+        .unwrap_or_default();
+
+    if base_purpose == delta_purpose {
+        return None;
+    }
+    if base_purpose.is_empty() {
+        return Some(Piece::Added {
+            delta: delta_purpose.to_string(),
+        });
+    }
+    match compare::changed_or_unchanged(base_purpose, delta_purpose) {
+        Piece::Unchanged { .. } => None,
+        piece => Some(piece),
     }
 }
 
@@ -666,5 +700,102 @@ mod tests {
                 requirement: "Old Name".to_string(),
             }]
         );
+    }
+
+    // --- purpose comparison (render-purpose 1.3) ---
+
+    const REQS_ONLY: &str = "## MODIFIED Requirements\n\n\
+        ### Requirement: Foo\n\
+        Intro.\n\n\
+        #### Scenario: A\n\
+        - **WHEN** a\n\
+        - **THEN** a2\n";
+    const BASE_REQS: &str = "## Requirements\n\n\
+        ### Requirement: Foo\n\
+        Intro.\n\n\
+        #### Scenario: A\n\
+        - **WHEN** a\n\
+        - **THEN** a2\n";
+
+    fn delta_with_purpose(purpose_md: &str) -> String {
+        format!("## Purpose\n\n{purpose_md}\n\n{REQS_ONLY}")
+    }
+
+    fn base_with_purpose(purpose_md: &str) -> String {
+        format!("## Purpose\n\n{purpose_md}\n\n{BASE_REQS}")
+    }
+
+    #[test]
+    fn delta_with_no_purpose_section_reports_no_purpose_comparison() {
+        let pair = pair_from_markdown(REQS_ONLY, Some(BASE_REQS));
+        assert_eq!(diff("cap", &pair).purpose, None);
+    }
+
+    #[test]
+    fn delta_purpose_against_no_spec_of_record_is_reported_as_added() {
+        let delta_md = delta_with_purpose("A brand new purpose.");
+        let pair = pair_from_markdown(&delta_md, None);
+        match diff("cap", &pair).purpose {
+            Some(Piece::Added { delta }) => assert_eq!(delta, "A brand new purpose."),
+            other => panic!("expected Some(Piece::Added), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn delta_purpose_against_base_with_no_purpose_section_is_reported_as_added() {
+        let delta_md = delta_with_purpose("A brand new purpose.");
+        let pair = pair_from_markdown(&delta_md, Some(BASE_REQS));
+        match diff("cap", &pair).purpose {
+            Some(Piece::Added { delta }) => assert_eq!(delta, "A brand new purpose."),
+            other => panic!("expected Some(Piece::Added), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn delta_purpose_equal_to_base_purpose_reports_no_comparison() {
+        let delta_md = delta_with_purpose("The same purpose.");
+        let base_md = base_with_purpose("The same purpose.");
+        let pair = pair_from_markdown(&delta_md, Some(&base_md));
+        assert_eq!(diff("cap", &pair).purpose, None);
+    }
+
+    #[test]
+    fn delta_purpose_differing_from_base_purpose_is_reported_changed() {
+        let delta_md = delta_with_purpose("The base purpose text EDITED.");
+        let base_md = base_with_purpose("The base purpose text.");
+        let pair = pair_from_markdown(&delta_md, Some(&base_md));
+        match diff("cap", &pair).purpose {
+            Some(Piece::Changed { base, delta, .. }) => {
+                assert_eq!(base, "The base purpose text.");
+                assert_eq!(delta, "The base purpose text EDITED.");
+            }
+            other => panic!("expected Some(Piece::Changed), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn delta_purpose_wholly_dissimilar_from_base_purpose_is_reported_replaced() {
+        // Same pair used by `compare`'s own `Piece::Replaced` calibration
+        // (design.md), reproduced inline so this test doesn't depend on that
+        // module's private test fixtures.
+        let base_purpose = "The left pane SHALL hold keyboard input focus for the duration of the application's runtime. There SHALL be no mechanism to move focus to the right pane.";
+        let delta_purpose = "Exactly one pane SHALL hold keyboard input focus at any time. The left pane SHALL hold focus when the application starts. The system SHALL move focus to the other pane when the user presses Tab, and SHALL indicate which pane currently holds focus visually. A key pressed while a pane holds focus SHALL be handled by that pane, except for keys the application handles globally.";
+        let delta_md = delta_with_purpose(delta_purpose);
+        let base_md = base_with_purpose(base_purpose);
+        let pair = pair_from_markdown(&delta_md, Some(&base_md));
+        match diff("cap", &pair).purpose {
+            Some(Piece::Replaced { .. }) => {}
+            other => panic!("expected Some(Piece::Replaced), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn purpose_comparison_is_deterministic() {
+        let delta_md = delta_with_purpose("The base purpose text EDITED.");
+        let base_md = base_with_purpose("The base purpose text.");
+        let pair = pair_from_markdown(&delta_md, Some(&base_md));
+        let first = diff("cap", &pair).purpose;
+        let second = diff("cap", &pair).purpose;
+        assert_eq!(first, second);
     }
 }

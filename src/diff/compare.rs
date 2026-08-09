@@ -46,7 +46,7 @@ fn similarity(base: &str, delta: &str, runs: &[Run]) -> f32 {
 /// dissimilar for an inline reading is reported as a wholesale replacement
 /// instead, unless either side is empty — there is then nothing to compare
 /// and no interleaving to avoid.
-fn changed_or_unchanged(base: &str, delta: &str) -> Piece {
+pub(crate) fn changed_or_unchanged(base: &str, delta: &str) -> Piece {
     if delta == base {
         return Piece::Unchanged {
             text: delta.to_string(),

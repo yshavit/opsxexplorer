@@ -71,6 +71,11 @@ pub struct App {
     /// The right pane's visible row count as of the most recent render, mirroring
     /// `left_viewport_rows`.
     right_viewport_rows: usize,
+    /// The right pane's inner content width as of the most recent render, so
+    /// `diff_rows()` can decide (via `diff_row::flatten`) whether the purpose
+    /// row fits without the caller needing to pass it through explicitly.
+    /// Mirrors `right_viewport_rows`'s one-frame-lag pattern (see design.md).
+    right_pane_width: usize,
 
     help_open: bool,
     help_line_offset: usize,
@@ -101,6 +106,7 @@ impl App {
             line_offset: 0,
             max_line_offset: 0,
             right_viewport_rows: 0,
+            right_pane_width: 0,
 
             help_open: false,
             help_line_offset: 0,
@@ -157,7 +163,7 @@ impl App {
     /// selected tab itself failed to load).
     pub fn diff_rows(&self) -> Vec<DiffRow<'_>> {
         match self.current_capability_diff() {
-            Some(diff) => diff_row::flatten(diff, &self.expanded),
+            Some(diff) => diff_row::flatten(diff, &self.expanded, self.right_pane_width),
             None => Vec::new(),
         }
     }
@@ -186,6 +192,12 @@ impl App {
     /// `set_left_viewport_rows`.
     pub fn set_right_viewport_rows(&mut self, rows: usize) {
         self.right_viewport_rows = rows;
+    }
+
+    /// Called by the right pane's renderer after computing its inner width,
+    /// alongside `set_right_viewport_rows`.
+    pub fn set_right_pane_width(&mut self, width: usize) {
+        self.right_pane_width = width;
     }
 
     pub fn help_open(&self) -> bool {
@@ -758,6 +770,7 @@ mod tests {
                 }],
             }],
             errors: vec![],
+            purpose: None,
         }
     }
 
@@ -938,15 +951,14 @@ mod tests {
         app.focus = Focus::Right;
 
         // Expand the requirement and its scenario so Intro and Body rows exist too.
-        app.expanded.insert(RowKey {
+        app.expanded.insert(RowKey::Requirement {
             capability: "cap".to_string(),
             requirement: "Req".to_string(),
-            scenario: None,
         });
-        app.expanded.insert(RowKey {
+        app.expanded.insert(RowKey::Scenario {
             capability: "cap".to_string(),
             requirement: "Req".to_string(),
-            scenario: Some("Scenario".to_string()),
+            scenario: "Scenario".to_string(),
         });
         app.reset_cursor_to_first_selectable();
 
@@ -1033,6 +1045,135 @@ mod tests {
         assert_eq!(app.diff_rows()[app.cursor].expanded(), Some(true));
         app.handle_key(key(KeyCode::Enter));
         assert_eq!(app.diff_rows()[app.cursor].expanded(), Some(false));
+    }
+
+    // --- purpose row wiring (render-purpose 6.3-6.6) ---
+
+    fn diff_with_purpose(capability: &str, piece: Piece) -> CapabilityDiff {
+        let mut diff = sample_diff(capability);
+        diff.purpose = Some(piece);
+        diff
+    }
+
+    #[test]
+    fn toggle_keys_on_a_purpose_full_row_are_inert() {
+        let diff = diff_with_purpose(
+            "cap",
+            Piece::Added {
+                delta: "short".to_string(),
+            },
+        );
+        let mut app = app_with_loaded(vec![("cap", diff)]);
+        app.focus = Focus::Right;
+        app.set_right_pane_width(200); // wide enough that "short" fits.
+        app.reset_cursor_to_first_selectable();
+
+        let rows = app.diff_rows();
+        assert!(
+            matches!(rows[app.cursor], DiffRow::PurposeFull(_)),
+            "expected cursor to start on the PurposeFull row"
+        );
+
+        let cursor_before = app.cursor;
+        let expanded_before = app.expanded.clone();
+
+        for code in [
+            KeyCode::Enter,
+            KeyCode::Char(' '),
+            KeyCode::Char('l'),
+            KeyCode::Char('h'),
+        ] {
+            app.handle_key(key(code));
+        }
+
+        assert_eq!(app.cursor, cursor_before);
+        assert_eq!(app.expanded, expanded_before);
+    }
+
+    #[test]
+    fn toggle_keys_expand_and_collapse_a_non_fitting_purpose_row() {
+        let text = "abcdefghijklmnopqrstuvwxyz".repeat(3);
+        let diff = diff_with_purpose("cap", Piece::Added { delta: text });
+        let mut app = app_with_loaded(vec![("cap", diff)]);
+        app.focus = Focus::Right;
+        app.set_right_pane_width(10); // narrow enough that the text doesn't fit.
+        app.reset_cursor_to_first_selectable();
+
+        assert!(matches!(
+            app.diff_rows()[app.cursor],
+            DiffRow::Purpose { .. }
+        ));
+        assert_eq!(app.diff_rows()[app.cursor].expanded(), Some(false));
+
+        app.handle_key(key(KeyCode::Char('l')));
+        assert_eq!(app.diff_rows()[app.cursor].expanded(), Some(true));
+
+        app.handle_key(key(KeyCode::Char('h')));
+        assert_eq!(app.diff_rows()[app.cursor].expanded(), Some(false));
+
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(app.diff_rows()[app.cursor].expanded(), Some(true));
+    }
+
+    #[test]
+    fn purpose_notice_and_requirements_render_in_order_and_cursor_reaches_the_purpose_row() {
+        let mut diff = sample_diff("cap");
+        diff.errors.push(DiffError::MissingBaseRequirement {
+            capability: "cap".to_string(),
+            requirement: "Ghost".to_string(),
+        });
+        diff.purpose = Some(Piece::Added {
+            delta: "short purpose".to_string(),
+        });
+        let mut app = app_with_loaded(vec![("cap", diff)]);
+        app.focus = Focus::Right;
+        app.set_right_pane_width(200);
+        app.reset_cursor_to_first_selectable();
+
+        let rows = app.diff_rows();
+        assert!(matches!(rows[0], DiffRow::Notice(_)));
+        assert!(matches!(rows[1], DiffRow::PurposeHeading(_)));
+        assert!(matches!(rows[2], DiffRow::PurposeFull(_)));
+        assert!(matches!(rows[3], DiffRow::GroupHeading(Operation::Added)));
+
+        // The cursor starts on the first selectable row, skipping both the
+        // notice and the purpose heading, landing directly on the purpose row.
+        assert!(matches!(rows[app.cursor], DiffRow::PurposeFull(_)));
+
+        app.handle_key(key(KeyCode::Char('j')));
+        let rows = app.diff_rows();
+        assert!(matches!(rows[app.cursor], DiffRow::Requirement { .. }));
+    }
+
+    #[test]
+    fn cursor_reaches_a_non_fitting_purpose_row_too() {
+        let text = "abcdefghijklmnopqrstuvwxyz".repeat(3);
+        let diff = diff_with_purpose("cap", Piece::Added { delta: text });
+        let mut app = app_with_loaded(vec![("cap", diff)]);
+        app.focus = Focus::Right;
+        app.set_right_pane_width(10);
+        app.reset_cursor_to_first_selectable();
+
+        assert!(matches!(
+            app.diff_rows()[app.cursor],
+            DiffRow::Purpose { .. }
+        ));
+    }
+
+    #[test]
+    fn resizing_the_right_pane_across_the_fits_boundary_changes_purpose_row_kind() {
+        let text = "abcdefghijklmnopqrstuvwxyz".repeat(3);
+        let diff = diff_with_purpose("cap", Piece::Added { delta: text });
+        let mut app = app_with_loaded(vec![("cap", diff)]);
+        app.focus = Focus::Right;
+
+        app.set_right_pane_width(10); // narrow: doesn't fit.
+        app.reset_cursor_to_first_selectable();
+        let cursor = app.cursor;
+        assert!(matches!(app.diff_rows()[cursor], DiffRow::Purpose { .. }));
+
+        app.set_right_pane_width(200); // wide: fits.
+        assert!(matches!(app.diff_rows()[cursor], DiffRow::PurposeFull(_)));
     }
 
     // --- left pane: Enter/Space focus-shift ---

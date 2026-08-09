@@ -14,11 +14,50 @@ const GUTTER_WIDTH: usize = 2;
 /// Columns of indent per nesting level (requirement -> piece -> body).
 const INDENT_UNIT: usize = 2;
 
+/// The fixed prefix a *collapsed* purpose row renders before its content:
+/// disclosure triangle, pillcrow, and their separating spaces.
+const PURPOSE_COLLAPSED_PREFIX: &str = "▸ ¶ ";
+
+/// How many characters of text a purpose row has room for at pane width
+/// `width`, before deciding whether it needs to collapse at all. Budgeted
+/// against the collapsed row's own prefix width (not the plain `¶ ` prefix a
+/// fitting row would actually render), so `diff_row::flatten`'s fits-check
+/// and this module's own collapsed-row truncation always agree on the same
+/// number (see design.md). The purpose row is always at indent 0 (a sibling
+/// of `Requirement`, not nested under it).
+pub(crate) fn purpose_available(width: usize) -> usize {
+    width
+        .saturating_sub(GUTTER_WIDTH)
+        .saturating_sub(PURPOSE_COLLAPSED_PREFIX.chars().count())
+}
+
+/// A literal character-slice-plus-ellipsis truncation, indifferent to word
+/// boundaries — deliberately dumber than `wrap_spans`, for the one row in
+/// this pane whose collapsed form is an exact-width excerpt rather than a
+/// wrapped paragraph (see design.md).
+pub(crate) fn truncate_chars(text: &str, width: usize) -> String {
+    let mut truncated: String = text.chars().take(width.saturating_sub(1)).collect();
+    truncated.push('…');
+    truncated
+}
+
 /// Builds a row's spans, wraps them to the space left after the gutter and
 /// indent, and lays out the result as full lines: the marker prefixes only
 /// the first line, continuation lines get a blank gutter, and every line is
-/// left-padded by the row's indent (see design.md).
+/// left-padded by the row's indent (see design.md). A collapsed `Purpose`
+/// row is the one exception: its content is an exact-width excerpt or
+/// placeholder, not a wrapped paragraph, so it bypasses `wrap_spans`
+/// entirely (see `collapsed_purpose_lines`).
 pub fn row_lines(row: &DiffRow, width: usize) -> Vec<Line<'static>> {
+    if let DiffRow::Purpose {
+        piece,
+        expanded: false,
+        ..
+    } = row
+    {
+        return collapsed_purpose_lines(piece, width);
+    }
+
     let (marker, marker_style) = gutter_marker(row);
     let indent = indent_depth(row) * INDENT_UNIT;
     let available = width.saturating_sub(GUTTER_WIDTH + indent).max(1);
@@ -43,9 +82,57 @@ pub fn row_lines(row: &DiffRow, width: usize) -> Vec<Line<'static>> {
         .collect()
 }
 
+/// The placeholder a collapsed, wholesale-replacement purpose row shows in
+/// place of any excerpt of either text — a short slice of just the new text
+/// would misrepresent a rewrite as an ordinary edit (see design.md).
+const REPLACED_PURPOSE_PLACEHOLDER: &str = "Expand to view diff";
+
+/// Renders a collapsed purpose row as a single, unwrapped line: the fixed
+/// `▸ ¶ ` prefix followed by either a literal character-slice excerpt of the
+/// piece's current text (`Added`/`Changed`) or the italic placeholder
+/// (`Replaced`), each truncated with `truncate_chars` only when it doesn't
+/// already fit (see design.md).
+fn collapsed_purpose_lines(piece: &Piece, width: usize) -> Vec<Line<'static>> {
+    let (marker, marker_style) = piece_marker(piece);
+    let budget = purpose_available(width);
+
+    let content = match piece {
+        Piece::Added { delta } | Piece::Changed { delta, .. } => {
+            let trimmed = delta.trim_end();
+            Span::styled(truncate_chars(trimmed, budget), marker_style)
+        }
+        _ => {
+            let style = modified_style().add_modifier(Modifier::ITALIC);
+            let text = if REPLACED_PURPOSE_PLACEHOLDER.chars().count() <= budget {
+                REPLACED_PURPOSE_PLACEHOLDER.to_string()
+            } else {
+                truncate_chars(REPLACED_PURPOSE_PLACEHOLDER, budget)
+            };
+            Span::styled(text, style)
+        }
+    };
+
+    // Disclosure triangle unstyled (matching `Requirement`/`Scenario`'s own
+    // `expand_arrow` convention), pillcrow carrying the piece's marker color
+    // (matching `Intro`'s "¶" convention).
+    vec![Line::from(vec![
+        Span::styled(marker, marker_style),
+        Span::raw(" "),
+        Span::raw(expand_arrow(false)),
+        Span::styled("¶", marker_style),
+        Span::raw(" "),
+        content,
+    ])]
+}
+
 fn indent_depth(row: &DiffRow) -> usize {
     match row {
-        DiffRow::GroupHeading(_) | DiffRow::Requirement { .. } | DiffRow::Notice(_) => 0,
+        DiffRow::GroupHeading(_)
+        | DiffRow::PurposeHeading(_)
+        | DiffRow::PurposeFull(_)
+        | DiffRow::Purpose { .. }
+        | DiffRow::Requirement { .. }
+        | DiffRow::Notice(_) => 0,
         DiffRow::Intro { .. } | DiffRow::Scenario { .. } => 1,
         DiffRow::Body { .. } => 2,
     }
@@ -53,12 +140,15 @@ fn indent_depth(row: &DiffRow) -> usize {
 
 fn gutter_marker(row: &DiffRow) -> (&'static str, Style) {
     match row {
-        DiffRow::GroupHeading(_) | DiffRow::Body { .. } | DiffRow::Notice(_) => {
-            (" ", Style::default())
-        }
+        DiffRow::GroupHeading(_)
+        | DiffRow::PurposeHeading(_)
+        | DiffRow::Body { .. }
+        | DiffRow::Notice(_) => (" ", Style::default()),
         DiffRow::Requirement { op, .. } => requirement_marker(op),
         DiffRow::Intro { piece } => piece_marker(piece),
         DiffRow::Scenario { body, .. } => piece_marker(body),
+        DiffRow::PurposeFull(piece) => piece_marker(piece),
+        DiffRow::Purpose { piece, .. } => piece_marker(piece),
     }
 }
 
@@ -99,7 +189,7 @@ fn piece_marker(piece: &Piece) -> (&'static str, Style) {
     }
 }
 
-fn added_style() -> Style {
+pub(crate) fn added_style() -> Style {
     Style::new().fg(Color::Green)
 }
 
@@ -116,7 +206,7 @@ fn removed_marker_style() -> Style {
     Style::new().fg(Color::Red)
 }
 
-fn modified_style() -> Style {
+pub(crate) fn modified_style() -> Style {
     Style::new().fg(Color::Yellow)
 }
 
@@ -182,6 +272,29 @@ fn content_spans(row: &DiffRow) -> Vec<Span<'static>> {
         }
         DiffRow::Body { piece } => style_when_then(piece_spans(piece)),
         DiffRow::Notice(text) => vec![Span::styled(text.clone(), Style::new().fg(Color::Red))],
+        // Display-only; always rendered through `purpose_heading_box`
+        // instead (see `build_diff_lines`), never through this path.
+        DiffRow::PurposeHeading(_) => vec![],
+        DiffRow::PurposeFull(piece) => {
+            let (_, marker_style) = piece_marker(piece);
+            let mut spans = vec![Span::styled("¶", marker_style), Span::raw(" ")];
+            spans.extend(piece_spans(piece));
+            spans
+        }
+        // `expanded: false` is intercepted earlier in `row_lines` via
+        // `collapsed_purpose_lines`; only the expanded case reaches here.
+        DiffRow::Purpose {
+            piece, expanded, ..
+        } => {
+            let (_, marker_style) = piece_marker(piece);
+            let mut spans = vec![
+                Span::raw(expand_arrow(*expanded)),
+                Span::styled("¶", marker_style),
+                Span::raw(" "),
+            ];
+            spans.extend(piece_spans(piece));
+            spans
+        }
     }
 }
 
@@ -615,10 +728,9 @@ mod tests {
     }
 
     fn dummy_key(requirement: &str) -> super::super::diff_row::RowKey {
-        super::super::diff_row::RowKey {
+        super::super::diff_row::RowKey::Requirement {
             capability: "cap".to_string(),
             requirement: requirement.to_string(),
-            scenario: None,
         }
     }
 
@@ -774,5 +886,202 @@ mod tests {
                 .iter()
                 .all(|s| !s.style.add_modifier.contains(Modifier::BOLD))
         );
+    }
+
+    // --- purpose row rendering (render-purpose 5.6) ---
+
+    fn purpose_key() -> super::super::diff_row::RowKey {
+        super::super::diff_row::RowKey::Purpose {
+            capability: "cap".to_string(),
+        }
+    }
+
+    #[test]
+    fn truncate_chars_takes_width_minus_one_chars_and_appends_ellipsis() {
+        assert_eq!(truncate_chars("abcdefgh", 5), "abcd…");
+        assert_eq!(truncate_chars("abc", 1), "…");
+    }
+
+    #[test]
+    fn purpose_full_renders_full_text_with_no_ellipsis_and_no_arrow() {
+        let piece = Piece::Added {
+            delta: "short purpose text".to_string(),
+        };
+        let row = DiffRow::PurposeFull(&piece);
+        let lines = row_lines(&row, 80);
+        let text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(text.contains("short purpose text"));
+        assert!(!text.contains('…'));
+        assert!(!text.contains('▸'));
+        assert!(!text.contains('▾'));
+    }
+
+    #[test]
+    fn collapsed_added_purpose_is_one_line_ending_in_ellipsis_sized_to_available_width() {
+        let long_text = "abcdefghijklmnopqrstuvwxyz".repeat(3);
+        let piece = Piece::Added {
+            delta: long_text.clone(),
+        };
+        let width = 30;
+        let row = DiffRow::Purpose {
+            piece: &piece,
+            expanded: false,
+            key: purpose_key(),
+        };
+        let lines = row_lines(&row, width);
+        assert_eq!(lines.len(), 1);
+        let excerpt = lines[0].spans.last().unwrap().content.as_ref();
+        assert!(excerpt.ends_with('…'));
+        let budget = purpose_available(width);
+        assert_eq!(excerpt, truncate_chars(&long_text, budget));
+    }
+
+    #[test]
+    fn collapsed_purpose_truncation_ignores_word_boundaries() {
+        let text = "one two three four five six seven eight nine ten".to_string();
+        let piece = Piece::Changed {
+            base: "old".to_string(),
+            delta: text.clone(),
+            runs: vec![],
+        };
+        // Chosen so the budget's cut point lands inside "three", not on a
+        // preceding space.
+        let width = 17;
+        let row = DiffRow::Purpose {
+            piece: &piece,
+            expanded: false,
+            key: purpose_key(),
+        };
+        let lines = row_lines(&row, width);
+        let excerpt = lines[0].spans.last().unwrap().content.as_ref();
+        assert_eq!(excerpt, "one two th…");
+        let budget = purpose_available(width);
+        assert_eq!(excerpt, truncate_chars(&text, budget));
+    }
+
+    #[test]
+    fn collapsed_replaced_purpose_shows_italicized_placeholder_not_an_excerpt() {
+        let piece = Piece::Replaced {
+            base: "old text in full".to_string(),
+            delta: "new text in full".to_string(),
+        };
+        let row = DiffRow::Purpose {
+            piece: &piece,
+            expanded: false,
+            key: purpose_key(),
+        };
+        let lines = row_lines(&row, 40);
+        let last = lines[0].spans.last().unwrap();
+        assert_eq!(last.content.as_ref(), "Expand to view diff");
+        assert!(last.style.add_modifier.contains(Modifier::ITALIC));
+        assert!(!last.content.contains("old text"));
+        assert!(!last.content.contains("new text"));
+    }
+
+    #[test]
+    fn collapsed_replaced_purpose_placeholder_truncates_only_at_extreme_widths() {
+        let piece = Piece::Replaced {
+            base: "old".to_string(),
+            delta: "new".to_string(),
+        };
+        let row = DiffRow::Purpose {
+            piece: &piece,
+            expanded: false,
+            key: purpose_key(),
+        };
+
+        let wide_lines = row_lines(&row, 40);
+        let wide_content = wide_lines[0].spans.last().unwrap().content.as_ref();
+        assert_eq!(wide_content, "Expand to view diff");
+        assert!(!wide_content.contains('…'));
+
+        let narrow_lines = row_lines(&row, 6);
+        let narrow_content = narrow_lines[0].spans.last().unwrap().content.as_ref();
+        assert!(narrow_content.ends_with('…'));
+        assert!(narrow_content.chars().count() < "Expand to view diff".chars().count());
+    }
+
+    #[test]
+    fn expanded_changed_purpose_uses_the_same_interleaved_run_styling_as_an_intro_would() {
+        let runs = vec![
+            Run::Equal {
+                base: 0..4,
+                delta: 0..4,
+            },
+            Run::Delete { base: 4..9 },
+            Run::Insert { delta: 4..8 },
+            Run::Equal {
+                base: 9..15,
+                delta: 8..14,
+            },
+        ];
+        let base = "the quick brown fox";
+        let delta = "the slow brown fox";
+        let piece = Piece::Changed {
+            base: base.to_string(),
+            delta: delta.to_string(),
+            runs,
+        };
+        let row = DiffRow::Purpose {
+            piece: &piece,
+            expanded: true,
+            key: purpose_key(),
+        };
+        let spans = content_spans(&row);
+
+        let deleted_text: String = spans
+            .iter()
+            .filter(|s| s.style == removed_text_style())
+            .map(|s| s.content.as_ref())
+            .collect();
+        let inserted_text: String = spans
+            .iter()
+            .filter(|s| s.style == added_style())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(deleted_text, "quick");
+        assert_eq!(inserted_text, "slow");
+    }
+
+    #[test]
+    fn expanded_replaced_purpose_stacks_both_texts_like_any_other_replacement() {
+        let piece = Piece::Replaced {
+            base: "the old text in full".to_string(),
+            delta: "the new text in full".to_string(),
+        };
+        let row = DiffRow::Purpose {
+            piece: &piece,
+            expanded: true,
+            key: purpose_key(),
+        };
+        let spans = content_spans(&row);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("the old text in full"));
+        assert!(text.contains("the new text in full"));
+        assert!(text.contains('\n'));
+    }
+
+    #[test]
+    fn resizing_changes_the_collapsed_truncation_point_for_added_purpose() {
+        let text = "abcdefghijklmnopqrstuvwxyz".repeat(2);
+        let piece = Piece::Added {
+            delta: text.clone(),
+        };
+        let row = DiffRow::Purpose {
+            piece: &piece,
+            expanded: false,
+            key: purpose_key(),
+        };
+
+        let narrow = row_lines(&row, 20);
+        let wide = row_lines(&row, 40);
+        let narrow_excerpt = narrow[0].spans.last().unwrap().content.as_ref();
+        let wide_excerpt = wide[0].spans.last().unwrap().content.as_ref();
+        assert_ne!(narrow_excerpt, wide_excerpt);
+        assert!(wide_excerpt.chars().count() > narrow_excerpt.chars().count());
     }
 }
