@@ -341,8 +341,7 @@ mod tests {
         let scenario_a_delta = "- **WHEN** the user presses a key that both panes bind, while one of them holds focus\n- **THEN** the key is handled by the pane that holds focus, and the other pane's state is unchanged";
 
         // `tui-specdiff`'s "application launches" scenario body, ~0.585.
-        let scenario_b_base =
-            "- **WHEN** the application starts\n- **THEN** keyboard input is directed to the left pane";
+        let scenario_b_base = "- **WHEN** the application starts\n- **THEN** keyboard input is directed to the left pane";
         let scenario_b_delta = "- **WHEN** the application starts\n- **THEN** the left pane holds keyboard input focus, and this is visually indicated";
 
         // `changelist-archived-ordering`'s intro, ~0.483.
@@ -363,7 +362,10 @@ mod tests {
 
     #[test]
     fn an_empty_side_is_never_reported_as_replaced() {
-        match changed_or_unchanged("", "a wholly new intro with nothing in common to match against") {
+        match changed_or_unchanged(
+            "",
+            "a wholly new intro with nothing in common to match against",
+        ) {
             Piece::Changed { base, delta, .. } => {
                 assert_eq!(base, "");
                 assert_eq!(

@@ -55,9 +55,8 @@ fn is_quit_key(key: &KeyEvent) -> bool {
 
 fn render(frame: &mut Frame, app: &mut App) {
     let left_width = left_pane_width(frame.area().width, &app.all_rows());
-    let [left, right] =
-        Layout::horizontal([Constraint::Length(left_width), Constraint::Min(0)])
-            .areas(frame.area());
+    let [left, right] = Layout::horizontal([Constraint::Length(left_width), Constraint::Min(0)])
+        .areas(frame.area());
 
     render_left_pane(frame, left, app);
     render_right_pane(frame, right, app);
@@ -734,7 +733,10 @@ mod tests {
         for expanded in [false, true] {
             let spans = row_spans(&Row::ArchivedHeader { expanded });
             let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
-            assert!(text.ends_with("archived/"), "expected {text:?} to end with archived/");
+            assert!(
+                text.ends_with("archived/"),
+                "expected {text:?} to end with archived/"
+            );
         }
     }
 

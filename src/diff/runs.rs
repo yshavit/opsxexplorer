@@ -333,10 +333,24 @@ mod tests {
         let delta = "- **WHEN** the user quits the application by pressing `q`";
         let runs = runs(base, delta);
 
-        let deletes: Vec<&Run> = runs.iter().filter(|r| matches!(r, Run::Delete { .. })).collect();
-        let inserts: Vec<&Run> = runs.iter().filter(|r| matches!(r, Run::Insert { .. })).collect();
-        assert_eq!(deletes.len(), 1, "expected exactly one delete run, got {runs:?}");
-        assert_eq!(inserts.len(), 1, "expected exactly one insert run, got {runs:?}");
+        let deletes: Vec<&Run> = runs
+            .iter()
+            .filter(|r| matches!(r, Run::Delete { .. }))
+            .collect();
+        let inserts: Vec<&Run> = runs
+            .iter()
+            .filter(|r| matches!(r, Run::Insert { .. }))
+            .collect();
+        assert_eq!(
+            deletes.len(),
+            1,
+            "expected exactly one delete run, got {runs:?}"
+        );
+        assert_eq!(
+            inserts.len(),
+            1,
+            "expected exactly one insert run, got {runs:?}"
+        );
 
         let Run::Delete { base: b } = deletes[0] else {
             unreachable!()
@@ -363,10 +377,24 @@ mod tests {
                 .any(|r| matches!(r, Run::Equal { base: b, .. } if base[b.clone()].contains('c'))),
             "expected \"c\" to still anchor the diff, got {runs:?}"
         );
-        let deletes: Vec<&Run> = runs.iter().filter(|r| matches!(r, Run::Delete { .. })).collect();
-        let inserts: Vec<&Run> = runs.iter().filter(|r| matches!(r, Run::Insert { .. })).collect();
-        assert_eq!(deletes.len(), 2, "expected two distinct deletes, got {runs:?}");
-        assert_eq!(inserts.len(), 2, "expected two distinct inserts, got {runs:?}");
+        let deletes: Vec<&Run> = runs
+            .iter()
+            .filter(|r| matches!(r, Run::Delete { .. }))
+            .collect();
+        let inserts: Vec<&Run> = runs
+            .iter()
+            .filter(|r| matches!(r, Run::Insert { .. }))
+            .collect();
+        assert_eq!(
+            deletes.len(),
+            2,
+            "expected two distinct deletes, got {runs:?}"
+        );
+        assert_eq!(
+            inserts.len(),
+            2,
+            "expected two distinct inserts, got {runs:?}"
+        );
 
         assert_reconstructs(base, delta);
     }
@@ -383,13 +411,28 @@ mod tests {
         // between them must still separate the two into distinct edits
         // rather than collapsing into one deletion spanning both bullets.
         assert!(
-            runs.iter().any(|r| matches!(r, Run::Equal { base: b, .. } if base[b.clone()].contains('\n'))),
+            runs.iter()
+                .any(|r| matches!(r, Run::Equal { base: b, .. } if base[b.clone()].contains('\n'))),
             "expected the newline-containing equal run to still anchor, got {runs:?}"
         );
-        let deletes: Vec<&Run> = runs.iter().filter(|r| matches!(r, Run::Delete { .. })).collect();
-        let inserts: Vec<&Run> = runs.iter().filter(|r| matches!(r, Run::Insert { .. })).collect();
-        assert_eq!(deletes.len(), 2, "expected two distinct deletes, got {runs:?}");
-        assert_eq!(inserts.len(), 2, "expected two distinct inserts, got {runs:?}");
+        let deletes: Vec<&Run> = runs
+            .iter()
+            .filter(|r| matches!(r, Run::Delete { .. }))
+            .collect();
+        let inserts: Vec<&Run> = runs
+            .iter()
+            .filter(|r| matches!(r, Run::Insert { .. }))
+            .collect();
+        assert_eq!(
+            deletes.len(),
+            2,
+            "expected two distinct deletes, got {runs:?}"
+        );
+        assert_eq!(
+            inserts.len(),
+            2,
+            "expected two distinct inserts, got {runs:?}"
+        );
 
         assert_reconstructs(base, delta);
     }

@@ -443,7 +443,10 @@ mod tests {
         assert_eq!(deleted_text, "quick");
         assert_eq!(inserted_text, "slow");
 
-        let deleted_count = spans.iter().filter(|s| s.style == removed_text_style()).count();
+        let deleted_count = spans
+            .iter()
+            .filter(|s| s.style == removed_text_style())
+            .count();
         let inserted_count = spans.iter().filter(|s| s.style == added_style()).count();
         assert_eq!(deleted_count, 1);
         assert_eq!(inserted_count, 1);
@@ -536,7 +539,11 @@ mod tests {
                     continue;
                 }
                 if piece_base_words().contains(&word) {
-                    assert_eq!(span.style, removed_text_style(), "base word {word:?} mis-styled");
+                    assert_eq!(
+                        span.style,
+                        removed_text_style(),
+                        "base word {word:?} mis-styled"
+                    );
                 } else if piece_delta_words().contains(&word) {
                     assert_eq!(span.style, added_style(), "delta word {word:?} mis-styled");
                 }
