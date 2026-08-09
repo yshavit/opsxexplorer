@@ -54,8 +54,9 @@ fn is_quit_key(key: &KeyEvent) -> bool {
 }
 
 fn render(frame: &mut Frame, app: &mut App) {
+    let left_width = left_pane_width(frame.area().width, &app.all_rows());
     let [left, right] =
-        Layout::horizontal([Constraint::Percentage(35), Constraint::Percentage(65)])
+        Layout::horizontal([Constraint::Length(left_width), Constraint::Min(0)])
             .areas(frame.area());
 
     render_left_pane(frame, left, app);
@@ -79,7 +80,7 @@ fn render_left_pane(frame: &mut Frame, area: Rect, app: &mut App) {
     let inner_width = inner.width as usize;
 
     let rows = app.rows();
-    let widest = widest_row_width(&rows);
+    let widest = widest_row_width(&app.all_rows());
     let max_scroll = widest.saturating_sub(inner_width);
     let effective_offset = app.h_scroll().min(max_scroll);
     let items: Vec<ListItem<'static>> = rows
@@ -94,6 +95,10 @@ fn render_left_pane(frame: &mut Frame, area: Rect, app: &mut App) {
         .block(block)
         .highlight_style(Modifier::REVERSED);
     frame.render_stateful_widget(list, area, app.list_state());
+
+    if max_scroll == 0 {
+        return;
+    }
 
     // `ScrollbarState::content_length` is the count of valid scroll positions (its own `last()`
     // sets `position = content_length - 1`), not the raw content width: our valid positions are
@@ -501,11 +506,7 @@ fn row_spans(row: &Row) -> Vec<Span<'static>> {
         ))],
         Row::ArchivedHeader { expanded } => {
             let marker = if *expanded { "▾" } else { "▸" };
-            let mut style = Style::new();
-            if !*expanded {
-                style = style.add_modifier(Modifier::UNDERLINED);
-            }
-            vec![Span::styled(format!("{marker} archived"), style)]
+            vec![Span::styled(format!("{marker} archived/"), Style::new())]
         }
         Row::Archived(change) => {
             let mut spans = vec![Span::raw(indent)];
@@ -537,6 +538,18 @@ fn row_display_width(row: &Row) -> usize {
 
 fn widest_row_width(rows: &[Row]) -> usize {
     rows.iter().map(row_display_width).max().unwrap_or(0)
+}
+
+/// The left pane's width: the lesser of its default 35%-of-frame share and
+/// the widest row's content width plus a one-column buffer plus the pane's
+/// two border columns, computed over `all_rows` (every row, archived
+/// included, regardless of expand state) so the width doesn't change as the
+/// archived section is toggled (see design.md).
+fn left_pane_width(frame_width: u16, all_rows: &[Row]) -> u16 {
+    const BUFFER_AND_BORDERS: usize = 1 + 2;
+    let proportional_share = frame_width as usize * 35 / 100;
+    let content_width = widest_row_width(all_rows) + BUFFER_AND_BORDERS;
+    proportional_share.min(content_width) as u16
 }
 
 /// Drops `offset` characters cumulatively across `spans`, in order, keeping each remaining
@@ -669,6 +682,26 @@ mod tests {
     }
 
     #[test]
+    fn left_pane_width_shrinks_to_narrow_content_plus_buffer_and_borders() {
+        let a = Change("a".to_string());
+        let rows = vec![Row::Active(&a), Row::ArchivedHeader { expanded: false }];
+        let frame_width = 100;
+        let width = left_pane_width(frame_width, &rows);
+        let expected = widest_row_width(&rows) as u16 + 1 + 2;
+        assert_eq!(width, expected);
+        assert!((width as usize) < frame_width as usize * 35 / 100);
+    }
+
+    #[test]
+    fn left_pane_width_caps_at_the_proportional_share_for_wide_content() {
+        let long = Change("a".repeat(200));
+        let rows = vec![Row::Active(&long)];
+        let frame_width = 100;
+        let width = left_pane_width(frame_width, &rows);
+        assert_eq!(width as usize, frame_width as usize * 35 / 100);
+    }
+
+    #[test]
     fn skip_chars_blank_when_offset_exceeds_content() {
         let spans = vec![Span::raw("short")];
         let result = skip_chars(spans, 100);
@@ -697,31 +730,27 @@ mod tests {
     }
 
     #[test]
-    fn collapsed_archived_header_is_underlined_and_expanded_is_not() {
-        let collapsed = row_spans(&Row::ArchivedHeader { expanded: false });
-        assert!(
-            collapsed
-                .iter()
-                .all(|s| s.style.add_modifier.contains(Modifier::UNDERLINED))
-        );
-
-        let expanded = row_spans(&Row::ArchivedHeader { expanded: true });
-        assert!(
-            expanded
-                .iter()
-                .all(|s| !s.style.add_modifier.contains(Modifier::UNDERLINED))
-        );
+    fn archived_header_label_has_a_trailing_slash_collapsed_and_expanded() {
+        for expanded in [false, true] {
+            let spans = row_spans(&Row::ArchivedHeader { expanded });
+            let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+            assert!(text.ends_with("archived/"), "expected {text:?} to end with archived/");
+        }
     }
 
     #[test]
-    fn collapsed_archived_header_underline_persists_when_scrolled() {
-        let spans = row_spans(&Row::ArchivedHeader { expanded: false });
-        let scrolled = skip_chars(spans, 3);
-        assert!(!scrolled.is_empty());
-        assert!(
-            scrolled
-                .iter()
-                .all(|s| s.style.add_modifier.contains(Modifier::UNDERLINED))
+    fn collapsed_and_expanded_archived_header_differ_only_in_the_marker() {
+        let collapsed = row_spans(&Row::ArchivedHeader { expanded: false });
+        let expanded = row_spans(&Row::ArchivedHeader { expanded: true });
+
+        let collapsed_text: String = collapsed.iter().map(|s| s.content.as_ref()).collect();
+        let expanded_text: String = expanded.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(collapsed_text, "▸ archived/");
+        assert_eq!(expanded_text, "▾ archived/");
+
+        assert_eq!(
+            collapsed.iter().map(|s| s.style).collect::<Vec<_>>(),
+            expanded.iter().map(|s| s.style).collect::<Vec<_>>()
         );
     }
 
@@ -1102,6 +1131,133 @@ mod tests {
             rendered_contains_it,
             "expected the widest content line ({widest_line_text:?}) to render in full, \
              not clipped by the popup's border/padding"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- left pane: content-driven width and scrollbar visibility ---
+
+    fn temp_repo_with_changes(active: &[&str], archived: &[&str]) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "opsxexplorer-left-pane-width-test-{}-{id}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(dir.join("openspec/changes")).unwrap();
+        for name in active {
+            std::fs::create_dir_all(dir.join("openspec/changes").join(name)).unwrap();
+        }
+        if !archived.is_empty() {
+            std::fs::create_dir_all(dir.join("openspec/changes/archive")).unwrap();
+            for name in archived {
+                std::fs::create_dir_all(dir.join("openspec/changes/archive").join(name)).unwrap();
+            }
+        }
+        dir
+    }
+
+    /// The column at which the right pane's own left border starts, found by
+    /// locating the top row's `┐┌` seam between the two adjacent blocks.
+    fn right_pane_left_border_column(buf: &ratatui::buffer::Buffer) -> usize {
+        let symbols: Vec<&str> = (0..buf.area.width).map(|x| buf[(x, 0)].symbol()).collect();
+        symbols
+            .windows(2)
+            .position(|w| w[0] == "┐" && w[1] == "┌")
+            .map(|i| i + 1)
+            .expect("expected a seam between the left and right panes' top borders")
+    }
+
+    fn bottom_row_has_scrollbar_glyphs(buf: &ratatui::buffer::Buffer) -> bool {
+        let bottom_y = buf.area.height - 1;
+        (0..buf.area.width).any(|x| {
+            let s = buf[(x, bottom_y)].symbol();
+            s == "←" || s == "→" || s == "█"
+        })
+    }
+
+    #[test]
+    fn left_pane_width_is_identical_whether_archived_is_expanded_or_collapsed() {
+        use crate::changes::Changes;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let dir =
+            temp_repo_with_changes(&["a"], &["2026-01-01-a-rather-long-archived-change-name"]);
+        let mut app = App::new(Changes::discover(&dir).unwrap());
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
+        terminal.draw(|f| render(f, &mut app)).unwrap();
+        let collapsed_border_col = right_pane_left_border_column(terminal.backend().buffer());
+
+        let rows = app.rows();
+        let header_idx = rows
+            .iter()
+            .position(|r| matches!(r, Row::ArchivedHeader { .. }))
+            .unwrap();
+        app.list_state().select(Some(header_idx));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(
+            app.rows()[header_idx],
+            Row::ArchivedHeader { expanded: true }
+        ));
+
+        terminal.draw(|f| render(f, &mut app)).unwrap();
+        let expanded_border_col = right_pane_left_border_column(terminal.backend().buffer());
+
+        assert_eq!(
+            collapsed_border_col, expanded_border_col,
+            "left pane width must not change when the archived section is toggled"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn left_pane_scrollbar_hidden_when_content_fits() {
+        use crate::changes::Changes;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let dir = temp_repo_with_changes(&["a", "b"], &[]);
+        let mut app = App::new(Changes::discover(&dir).unwrap());
+        let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
+        terminal.draw(|f| render(f, &mut app)).unwrap();
+
+        assert!(
+            !bottom_row_has_scrollbar_glyphs(terminal.backend().buffer()),
+            "expected no scrollbar when every row (including the collapsed archived header) fits"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn left_pane_scrollbar_shown_when_content_exceeds_the_proportional_cap() {
+        use crate::changes::Changes;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let long_name = format!("2026-01-01-{}", "a".repeat(80));
+        let dir = temp_repo_with_changes(&["a"], &[&long_name]);
+        let mut app = App::new(Changes::discover(&dir).unwrap());
+
+        let rows = app.rows();
+        let header_idx = rows
+            .iter()
+            .position(|r| matches!(r, Row::ArchivedHeader { .. }))
+            .unwrap();
+        app.list_state().select(Some(header_idx));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
+        terminal.draw(|f| render(f, &mut app)).unwrap();
+
+        assert!(
+            bottom_row_has_scrollbar_glyphs(terminal.backend().buffer()),
+            "expected a scrollbar once the widest row exceeds the pane's proportional cap"
         );
 
         std::fs::remove_dir_all(&dir).ok();

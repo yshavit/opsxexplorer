@@ -13,32 +13,28 @@ The left pane SHALL list all active changes before any archived content, sorted 
 - **WHEN** the repo has active changes `zebra-support`, `change-modeling`, and `dark-mode`
 - **THEN** the left pane lists them in the order `change-modeling`, `dark-mode`, `zebra-support`
 
-### Requirement: Archived changes are grouped under a collapsible section
-The left pane SHALL show a single `archived` row after the active changes. The archived row SHALL be collapsed on launch. When expanded, it SHALL reveal the archived changes as rows beneath it; when collapsed, those rows SHALL NOT appear in the list. While collapsed, the `archived` row SHALL render with an underline style; while expanded, it SHALL NOT.
+### Requirement: Archived section is a collapsible `archived/` row
+The left pane SHALL show a single `archived/` row after the active changes. The archived row SHALL be collapsed on launch. When expanded, it SHALL reveal the archived changes as rows beneath it; when collapsed, those rows SHALL NOT appear in the list. The row's label and style SHALL be identical whether collapsed or expanded, except for the disclosure triangle (`▸` when collapsed, `▾` when expanded).
 
 #### Scenario: archived row collapsed by default
 - **WHEN** the application starts
-- **THEN** the `archived` row is present and collapsed, and no individual archived changes are shown
+- **THEN** the `archived/` row is present and collapsed, and no individual archived changes are shown
 
 #### Scenario: expanding reveals archived changes
-- **WHEN** the user expands the `archived` row
+- **WHEN** the user expands the `archived/` row
 - **THEN** the archived changes appear as rows immediately beneath it
 
 #### Scenario: collapsing hides archived changes
-- **WHEN** the user collapses an expanded `archived` row
+- **WHEN** the user collapses an expanded `archived/` row
 - **THEN** the archived changes beneath it no longer appear in the list
 
-#### Scenario: collapsed row is underlined
-- **WHEN** the `archived` row is collapsed
-- **THEN** it renders with an underline style
+#### Scenario: row label carries a trailing slash
+- **WHEN** the `archived/` row is rendered, collapsed or expanded
+- **THEN** its label reads `archived/`, with a trailing slash
 
-#### Scenario: expanded row is not underlined
-- **WHEN** the `archived` row is expanded
-- **THEN** it renders without an underline style
-
-#### Scenario: underline persists under horizontal scroll
-- **WHEN** the `archived` row is collapsed and the pane is scrolled horizontally such that only part of the row's text is visible
-- **THEN** the visible portion of the row's text still renders underlined
+#### Scenario: only the disclosure triangle differs between states
+- **WHEN** the `archived/` row's collapsed and expanded renderings are compared
+- **THEN** the two differ only in the disclosure triangle (`▸` vs `▾`); the label text and style are identical
 
 ### Requirement: Archived changes sorted alphabetically, displayed with date
 When expanded, the archived section SHALL list archived changes ordered by their `YYYY-MM-DD` date prefix descending (most recent date first). Archived changes sharing the same date SHALL be ordered by the timestamp of the commit that first introduced the change's directory in git history, descending (most recently introduced first); a change whose introducing commit cannot be resolved (for example, an uncommitted change, or no enclosing git repository) SHALL sort as more recent than any change whose introducing commit can be resolved. Archived changes that remain tied after applying both the date and commit-timestamp comparisons SHALL be ordered by their full directory name (date prefix included), ascending. Each archived change SHALL be displayed as its date followed by its change name (date prefix removed from the name portion), with the date rendered in a visually de-emphasized (dimmed) style relative to the change name.
@@ -154,6 +150,25 @@ When there are no active changes, the left pane SHALL show a placeholder row rea
 - **WHEN** the cursor is adjacent to a placeholder row and the user moves the cursor toward it
 - **THEN** the cursor skips over the placeholder row and lands on the next selectable row
 
+### Requirement: Left pane width is capped to its content
+The left pane's width SHALL be the lesser of its default proportional share of the frame and the widest row's content width plus a one-column buffer plus the pane's borders, where the widest row is computed across all rows — active changes, the `archived` header, and every archived change — regardless of whether the archived section is currently expanded. When the content-driven width is narrower than the default proportional share, the freed columns SHALL be given to the right pane. When the content-driven width would exceed the default proportional share, the pane SHALL be capped at the proportional share instead, and horizontal scrolling applies as usual.
+
+#### Scenario: narrow content shrinks the pane
+- **WHEN** every row's content, including archived rows, is narrower than the pane's default proportional share of the frame
+- **THEN** the left pane's width is the widest row's content width plus a one-column buffer plus borders, and the right pane receives the remaining columns
+
+#### Scenario: wide content caps the pane at its default share
+- **WHEN** the widest row's content is wider than the pane's default proportional share of the frame
+- **THEN** the left pane's width does not exceed that default share, and the pane's content requires horizontal scrolling to view in full
+
+#### Scenario: width does not change when the archived section is expanded or collapsed
+- **WHEN** the archived section is expanded or collapsed
+- **THEN** the left pane's width does not change, because its width is computed from all rows regardless of the archived section's current state
+
+#### Scenario: comfortable space is left between content and border
+- **WHEN** the left pane's width is determined by its content rather than capped by the default proportional share
+- **THEN** there is a one-column buffer between the widest row's last character and the pane's border
+
 ### Requirement: Left pane scrolls horizontally as a single unit
 When any row's content is wider than the left pane, the user SHALL be able to scroll the pane's content horizontally. Scrolling SHALL apply a single offset to every row — active changes, the `archived` header, and archived changes alike — so all rows shift together and stay vertically aligned. The offset SHALL be moved one column at a time with `h`/`l` and the left/right arrow keys, and jumped to the leftmost or rightmost extent with `^`/Home and `$`/End respectively.
 
@@ -186,18 +201,18 @@ When any row's content is wider than the left pane, the user SHALL be able to sc
 - **THEN** the scroll position does not move further
 
 ### Requirement: Horizontal scroll position is indicated with a scrollbar
-The left pane SHALL show a horizontal scrollbar reflecting the current scroll offset relative to the widest row's content. The scrollbar SHALL only indicate scrollable content when at least one row is wider than the pane.
+When at least one row — including collapsed archived rows — is wider than the pane, the left pane SHALL show a horizontal scrollbar reflecting the current scroll offset relative to the widest row's content. When no row is wider than the pane, the scrollbar SHALL NOT render at all.
 
 #### Scenario: all rows fit within the pane
 - **WHEN** every visible row's content fits within the left pane's width
-- **THEN** the horizontal scrollbar shows no scrollable range
+- **THEN** the left pane renders no horizontal scrollbar
 
 #### Scenario: a row is wider than the pane
 - **WHEN** at least one visible row's content is wider than the left pane
 - **THEN** the horizontal scrollbar reflects that there is additional content and shows the current scroll position within it
 
-### Requirement: Horizontal scroll offset persists across selection and section toggling, clamped to current content
-The horizontal scroll offset SHALL NOT reset when the cursor moves to a different row or when the `archived` section is expanded or collapsed. The offset SHALL instead be clamped, at render time, to the maximum scroll needed for the currently visible rows at the pane's current width — so it self-corrects whenever the visible content or the pane's width changes, without an explicit reset.
+### Requirement: Horizontal scroll offset persists across selection and section toggling, clamped to all rows
+The horizontal scroll offset SHALL NOT reset when the cursor moves to a different row or when the `archived` section is expanded or collapsed. The offset SHALL instead be clamped, at render time, to the maximum scroll needed across all rows — active changes, the `archived` header, and every archived change, whether or not the archived section is currently expanded — at the pane's current width. Because the clamp always accounts for archived rows, expanding or collapsing the archived section does not change the available scroll range.
 
 #### Scenario: moving the cursor does not reset horizontal scroll
 - **WHEN** the pane is scrolled right and the user moves the cursor to a different row
@@ -207,9 +222,9 @@ The horizontal scroll offset SHALL NOT reset when the cursor moves to a differen
 - **WHEN** the pane is scrolled right past the length of a given row's content
 - **THEN** that row renders with no visible text, while rows with content reaching that far still show their content
 
-#### Scenario: collapsing the archived section reduces the available scroll range
+#### Scenario: collapsing the archived section does not change the available scroll range
 - **WHEN** the pane is scrolled right to reveal content only present in an expanded archived row, and the user collapses the `archived` section
-- **THEN** the scroll offset is reduced to the maximum needed for the now-visible rows, if it exceeded that maximum
+- **THEN** the scroll offset is unchanged, because the maximum scroll range already accounted for the (now-hidden) archived row's content
 
 #### Scenario: widening the pane reduces the available scroll range
 - **WHEN** the pane is scrolled right and the terminal is resized wider such that the previously-scrolled content now fits

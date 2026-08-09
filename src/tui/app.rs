@@ -119,6 +119,14 @@ impl App {
         )
     }
 
+    /// Every row as if the archived section were expanded, regardless of
+    /// `archived_expanded`'s actual state. Used solely for width/scroll-max
+    /// computation, so those don't vary with whether the section happens to
+    /// be collapsed (see design.md).
+    pub fn all_rows(&self) -> Vec<Row<'_>> {
+        row::flatten(&self.changes.active, &self.changes.archived, true)
+    }
+
     pub fn list_state(&mut self) -> &mut ListState {
         &mut self.list_state
     }
@@ -695,6 +703,25 @@ mod tests {
         assert_eq!(next_selectable(&rows, 0, -1), 0);
         let last = rows.len() - 1;
         assert_eq!(next_selectable(&rows, last, 1), last);
+    }
+
+    #[test]
+    fn all_rows_is_unaffected_by_archived_expanded_toggle() {
+        let mut app = empty_app();
+        app.changes.archived = vec![
+            Change("archive/2026-01-01-x".to_string()),
+            Change("archive/2026-01-02-y".to_string()),
+        ];
+        assert!(!app.archived_expanded);
+        let collapsed: Vec<String> = app.all_rows().iter().map(|r| format!("{r:?}")).collect();
+
+        app.archived_expanded = true;
+        let expanded: Vec<String> = app.all_rows().iter().map(|r| format!("{r:?}")).collect();
+
+        assert_eq!(collapsed, expanded);
+        // Sanity check: `all_rows` actually includes the archived changes,
+        // not just an accident of both states being empty.
+        assert!(collapsed.iter().any(|s| s.starts_with("Archived(")));
     }
 
     #[test]
