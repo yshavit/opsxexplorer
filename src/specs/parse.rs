@@ -420,20 +420,21 @@ mod tests {
             req_names(&spec.requirements),
             vec![
                 "Active changes listed first, alphabetically",
-                "Archived changes are grouped under a collapsible section",
+                "Archived section is a collapsible archived/ row",
                 "Archived changes sorted alphabetically, displayed with date",
                 "Single cursor navigable over active, archived-header, and archived rows",
                 "Archived section toggles when its header is selected",
                 "Selecting a change moves focus to the right pane",
                 "Collapsing returns the cursor to the archived header",
                 "Empty sections show placeholder text",
+                "Left pane width is capped to its content",
                 "Left pane scrolls horizontally as a single unit",
                 "Horizontal scroll position is indicated with a scrollbar",
-                "Horizontal scroll offset persists across selection and section toggling, clamped to current content",
+                "Horizontal scroll offset persists across selection and section toggling, clamped to all rows",
             ]
         );
         let total_scenarios: usize = spec.requirements.iter().map(|r| r.scenarios.len()).sum();
-        assert_eq!(total_scenarios, 44);
+        assert_eq!(total_scenarios, 47);
     }
 
     #[test]
