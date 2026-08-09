@@ -82,7 +82,7 @@ pub(crate) fn operation_style(op: &Operation) -> Style {
     match op {
         Operation::Added => added_style(),
         Operation::Modified | Operation::Renamed { .. } => modified_style(),
-        Operation::Removed => removed_style(),
+        Operation::Removed => removed_marker_style(),
     }
 }
 
@@ -93,7 +93,7 @@ fn piece_marker(piece: &Piece) -> (&'static str, Style) {
     match piece {
         Piece::Unchanged { .. } => (" ", Style::default()),
         Piece::Added { .. } => ("+", added_style()),
-        Piece::Deleted { .. } => ("-", removed_style()),
+        Piece::Deleted { .. } => ("-", removed_marker_style()),
         Piece::Changed { .. } | Piece::Replaced { .. } => ("~", modified_style()),
         Piece::Unmentioned { .. } => ("?", Style::new().add_modifier(Modifier::DIM)),
     }
@@ -103,7 +103,16 @@ fn added_style() -> Style {
     Style::new().fg(Color::Green)
 }
 
-fn removed_style() -> Style {
+/// The style for removed text content (a deletion run, a deleted piece, or
+/// the base side of a replacement): red, struck through.
+fn removed_text_style() -> Style {
+    removed_marker_style().add_modifier(Modifier::CROSSED_OUT)
+}
+
+/// The style for removed markers and labels — gutter markers, the `REQ`
+/// label — that carries the "removed" color without the strikeout, since a
+/// strikeout only reads sensibly over prose.
+fn removed_marker_style() -> Style {
     Style::new().fg(Color::Red)
 }
 
@@ -200,11 +209,11 @@ fn piece_spans(piece: &Piece) -> Vec<Span<'static>> {
     match piece {
         Piece::Unchanged { text } => vec![Span::raw(text.clone())],
         Piece::Added { delta } => vec![Span::styled(delta.clone(), added_style())],
-        Piece::Deleted { base } => vec![Span::styled(base.clone(), removed_style())],
+        Piece::Deleted { base } => vec![Span::styled(base.clone(), removed_text_style())],
         Piece::Unmentioned { base } => vec![Span::raw(base.clone())],
         Piece::Changed { base, delta, runs } => changed_spans(base, delta, runs),
         Piece::Replaced { base, delta } => vec![
-            Span::styled(base.clone(), removed_style()),
+            Span::styled(base.clone(), removed_text_style()),
             Span::raw("\n"),
             Span::styled(delta.clone(), added_style()),
         ],
@@ -221,7 +230,7 @@ fn changed_spans(base: &str, delta: &str, runs: &[Run]) -> Vec<Span<'static>> {
     runs.iter()
         .map(|run| match run {
             Run::Equal { delta: d, .. } => Span::raw(slice(delta, d)),
-            Run::Delete { base: b } => Span::styled(slice(base, b), removed_style()),
+            Run::Delete { base: b } => Span::styled(slice(base, b), removed_text_style()),
             Run::Insert { delta: d } => Span::styled(slice(delta, d), added_style()),
         })
         .collect()
@@ -423,7 +432,7 @@ mod tests {
 
         let deleted_text: String = spans
             .iter()
-            .filter(|s| s.style == removed_style())
+            .filter(|s| s.style == removed_text_style())
             .map(|s| s.content.as_ref())
             .collect();
         let inserted_text: String = spans
@@ -434,7 +443,7 @@ mod tests {
         assert_eq!(deleted_text, "quick");
         assert_eq!(inserted_text, "slow");
 
-        let deleted_count = spans.iter().filter(|s| s.style == removed_style()).count();
+        let deleted_count = spans.iter().filter(|s| s.style == removed_text_style()).count();
         let inserted_count = spans.iter().filter(|s| s.style == added_style()).count();
         assert_eq!(deleted_count, 1);
         assert_eq!(inserted_count, 1);
@@ -483,7 +492,7 @@ mod tests {
         assert!(
             spans[..newline_index]
                 .iter()
-                .all(|s| s.style == removed_style())
+                .all(|s| s.style == removed_text_style())
         );
         assert!(
             spans[newline_index + 1..]
@@ -527,7 +536,7 @@ mod tests {
                     continue;
                 }
                 if piece_base_words().contains(&word) {
-                    assert_eq!(span.style, removed_style(), "base word {word:?} mis-styled");
+                    assert_eq!(span.style, removed_text_style(), "base word {word:?} mis-styled");
                 } else if piece_delta_words().contains(&word) {
                     assert_eq!(span.style, added_style(), "delta word {word:?} mis-styled");
                 }
