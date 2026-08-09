@@ -1,5 +1,6 @@
 mod app;
 mod diff_row;
+mod help;
 mod layout;
 mod row;
 mod wrap;
@@ -7,10 +8,11 @@ mod wrap;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
-    Block, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    Block, BorderType, Clear, List, ListItem, Padding, Paragraph, Scrollbar, ScrollbarOrientation,
+    ScrollbarState,
 };
 
 use crate::changes::Changes;
@@ -58,12 +60,21 @@ fn render(frame: &mut Frame, app: &mut App) {
 
     render_left_pane(frame, left, app);
     render_right_pane(frame, right, app);
+
+    if app.help_open() {
+        render_help_modal(frame, frame.area(), app);
+    }
 }
 
 fn render_left_pane(frame: &mut Frame, area: Rect, app: &mut App) {
+    let dim = app.help_open();
+    let mut border_style = focus_border_style(app.focus() == Focus::Left);
+    if dim {
+        border_style = desaturate_style(border_style);
+    }
     let block = Block::bordered()
         .title("Changes")
-        .border_style(focus_border_style(app.focus() == Focus::Left));
+        .border_style(border_style);
     let inner = block.inner(area);
     let inner_width = inner.width as usize;
 
@@ -73,7 +84,7 @@ fn render_left_pane(frame: &mut Frame, area: Rect, app: &mut App) {
     let effective_offset = app.h_scroll().min(max_scroll);
     let items: Vec<ListItem<'static>> = rows
         .iter()
-        .map(|row| row_to_list_item(row, effective_offset))
+        .map(|row| row_to_list_item(row, effective_offset, dim))
         .collect();
 
     app.set_max_h_scroll(max_scroll);
@@ -99,7 +110,11 @@ fn render_left_pane(frame: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn render_right_pane(frame: &mut Frame, area: Rect, app: &mut App) {
-    let border_style = focus_border_style(app.focus() == Focus::Right);
+    let dim = app.help_open();
+    let mut border_style = focus_border_style(app.focus() == Focus::Right);
+    if dim {
+        border_style = desaturate_style(border_style);
+    }
 
     match app.pane_view() {
         PaneView::NotAChange => render_message_pane(
@@ -144,6 +159,7 @@ fn render_diff_tabs(
     tab_error: Option<String>,
     border_style: Style,
 ) {
+    let dim = app.help_open();
     let block = Block::bordered()
         .border_style(border_style)
         .title(tab_bar_title(names, selected));
@@ -151,10 +167,11 @@ fn render_diff_tabs(
     frame.render_widget(block, area);
 
     if let Some(msg) = tab_error {
-        frame.render_widget(
-            Paragraph::new(msg).style(Style::new().fg(Color::Red)),
-            inner,
-        );
+        let mut style = Style::new().fg(Color::Red);
+        if dim {
+            style = desaturate_style(style);
+        }
+        frame.render_widget(Paragraph::new(msg).style(style), inner);
         app.set_line_offset(0);
         app.set_max_line_offset(0);
         render_right_scrollbar(frame, area, 0, 0);
@@ -167,6 +184,9 @@ fn render_diff_tabs(
 
     let (mut lines, selected_range, reveal_end) =
         build_diff_lines(&app.diff_rows(), inner_width, cursor);
+    if dim {
+        lines = lines.into_iter().map(desaturate_line).collect();
+    }
 
     let max_line_offset = lines.len().saturating_sub(inner_height);
     let offset = clamp_offset(
@@ -194,13 +214,88 @@ fn render_diff_tabs(
     render_right_scrollbar(frame, area, offset, max_line_offset);
 }
 
-/// Mirrors the left pane's horizontal scrollbar handling (`render_left_pane`):
 /// `content_length` is `max_offset + 1`, the count of valid scroll positions,
-/// and the scrollbar is rendered even when there is nothing to scroll.
+/// matching the left pane's horizontal scrollbar handling (`render_left_pane`).
+/// Unlike that one, this scrollbar is hidden entirely when there's nothing to
+/// scroll, rather than rendered in an empty/full state.
 fn render_right_scrollbar(frame: &mut Frame, area: Rect, offset: usize, max_line_offset: usize) {
+    if max_line_offset == 0 {
+        return;
+    }
     let mut scrollbar_state = ScrollbarState::new(max_line_offset + 1).position(offset);
     let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
     frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
+}
+
+/// Renders the `?` help modal as a `Clear` + bordered popup over the two-pane
+/// layout, sized to its content and capped to the available frame (see
+/// design.md - Decision 4). The content itself is fully static — there's
+/// nothing left to expand or collapse — so the popup's width never varies;
+/// only its height ever clamps, and only when the frame is too short to fit
+/// everything, in which case the content scrolls line by line.
+fn render_help_modal(frame: &mut Frame, area: Rect, app: &mut App) {
+    let lines = help::lines();
+
+    // Columns of padding on *each* of the left/right edges (spec.md);
+    // `Padding::horizontal` below applies this to both sides, so the width
+    // computation must account for it twice, not once — a mismatch here
+    // previously left the widest line's tail clipped by exactly that gap.
+    const H_PADDING: u16 = 2;
+    let content_width = lines.iter().map(line_width).max().unwrap_or(0) as u16 + H_PADDING * 2;
+    let content_height = lines.len() as u16;
+    let (popup_width, popup_height) = popup_size(content_width, content_height, area);
+    let popup_area = centered_rect(popup_width, popup_height, area);
+
+    let block = Block::bordered()
+        .title("Keybindings")
+        .on_light_blue()
+        .border_style(Style::new().fg(Color::DarkGray))
+        .border_type(BorderType::Rounded)
+        .padding(Padding::horizontal(H_PADDING));
+    let inner = block.inner(popup_area);
+    let inner_height = inner.height as usize;
+
+    let max_line_offset = lines.len().saturating_sub(inner_height);
+    let offset = app.help_line_offset().min(max_line_offset);
+    app.set_help_line_offset(offset);
+    app.set_help_max_line_offset(max_line_offset);
+    app.set_help_viewport_rows(inner_height);
+
+    frame.render_widget(Clear, popup_area);
+    frame.render_widget(block, popup_area);
+    let paragraph = Paragraph::new(Text::from(lines)).scroll((offset as u16, 0));
+    frame.render_widget(paragraph, inner);
+
+    render_right_scrollbar(frame, popup_area, offset, max_line_offset);
+}
+
+fn line_width(line: &Line) -> usize {
+    line.spans.iter().map(|s| s.content.chars().count()).sum()
+}
+
+/// The popup's `(width, height)`: exactly `content` plus its own border, unless
+/// that exceeds what `area` has room for (minus a small margin so the popup
+/// never touches the frame's edge), in which case it's capped to the available
+/// space (spec.md - "The modal is sized to its content, capped to the
+/// available frame").
+fn popup_size(content_width: u16, content_height: u16, area: Rect) -> (u16, u16) {
+    const MARGIN: u16 = 2;
+    const BORDERS: u16 = 2;
+    let max_width = area.width.saturating_sub(MARGIN * 2).max(BORDERS + 1);
+    let max_height = area.height.saturating_sub(MARGIN * 2).max(BORDERS + 1);
+    let width = (content_width + BORDERS).min(max_width);
+    let height = (content_height + BORDERS).min(max_height);
+    (width, height)
+}
+
+/// Centers a `width`x`height` rect within `area`, clamping to `area`'s own
+/// bounds so it never renders larger than the frame it overlays.
+fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
+    let width = width.min(area.width);
+    let height = height.min(area.height);
+    let x = area.x + (area.width - width) / 2;
+    let y = area.y + (area.height - height) / 2;
+    Rect::new(x, y, width, height)
 }
 
 /// Lays out a tab's rows into rendered lines, and reports which line range
@@ -463,8 +558,39 @@ fn skip_chars(spans: Vec<Span<'static>>, mut offset: usize) -> Vec<Span<'static>
     result
 }
 
-fn row_to_list_item(row: &Row, h_scroll: usize) -> ListItem<'static> {
-    ListItem::new(Line::from(skip_chars(row_spans(row), h_scroll)))
+fn row_to_list_item(row: &Row, h_scroll: usize, dim: bool) -> ListItem<'static> {
+    let line = Line::from(skip_chars(row_spans(row), h_scroll));
+    let line = if dim { desaturate_line(line) } else { line };
+    ListItem::new(line)
+}
+
+/// The flat neutral tone every colored span is reduced to while the help modal is
+/// open, replacing whichever color it originally carried. A single post-process
+/// step over already-styled output, rather than a "dimmed" parameter threaded
+/// through every color-producing call site (see design.md - Decision 5).
+const DESATURATED_COLOR: Color = Color::Gray;
+
+fn desaturate_style(style: Style) -> Style {
+    Style {
+        fg: style.fg.map(|_| DESATURATED_COLOR),
+        bg: style.bg.map(|_| DESATURATED_COLOR),
+        ..style
+    }
+}
+
+fn desaturate_span(span: Span<'static>) -> Span<'static> {
+    Span::styled(span.content, desaturate_style(span.style))
+}
+
+fn desaturate_line(line: Line<'static>) -> Line<'static> {
+    let style = desaturate_style(line.style);
+    Line::from(
+        line.spans
+            .into_iter()
+            .map(desaturate_span)
+            .collect::<Vec<_>>(),
+    )
+    .style(style)
 }
 
 /// Formats a change's raw, hyphenated name for display.
@@ -846,5 +972,138 @@ mod tests {
         // becomes reachable as the cursor moves further into the block.
         let offset = clamp_offset(0, 20, Some((0, 1)), 20, 5);
         assert_eq!(offset, 0);
+    }
+
+    // --- help modal: popup sizing ---
+
+    #[test]
+    fn popup_sizes_to_content_when_it_fits_the_frame() {
+        let area = Rect::new(0, 0, 80, 40);
+        assert_eq!(popup_size(30, 10, area), (32, 12));
+    }
+
+    #[test]
+    fn popup_clamps_to_the_available_frame_when_content_overflows() {
+        let area = Rect::new(0, 0, 20, 10);
+        // max width/height is the frame minus a 2-column margin on each side.
+        assert_eq!(popup_size(100, 100, area), (16, 6));
+    }
+
+    // --- help modal: desaturation pass ---
+
+    #[test]
+    fn desaturate_strips_colors_but_preserves_modifiers() {
+        let style = Style::new()
+            .fg(Color::Red)
+            .bg(Color::Blue)
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+        let result = desaturate_style(style);
+        assert_eq!(result.fg, Some(DESATURATED_COLOR));
+        assert_eq!(result.bg, Some(DESATURATED_COLOR));
+        assert!(result.add_modifier.contains(Modifier::BOLD));
+        assert!(result.add_modifier.contains(Modifier::UNDERLINED));
+    }
+
+    #[test]
+    fn desaturate_leaves_unset_colors_unset() {
+        let style = Style::new().add_modifier(Modifier::DIM);
+        let result = desaturate_style(style);
+        assert_eq!(result.fg, None);
+        assert_eq!(result.bg, None);
+        assert!(result.add_modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn desaturate_line_applies_to_every_span_and_the_lines_own_style() {
+        let line = Line::from(vec![
+            Span::styled("a", Style::new().fg(Color::Green)),
+            Span::styled("b", Style::new().fg(Color::Red)),
+        ])
+        .style(Style::new().bg(Color::Yellow));
+        let result = desaturate_line(line);
+        assert_eq!(result.style.bg, Some(DESATURATED_COLOR));
+        for span in &result.spans {
+            assert_eq!(span.style.fg, Some(DESATURATED_COLOR));
+        }
+    }
+
+    // --- render_right_scrollbar: hidden when there's nothing to scroll ---
+
+    #[test]
+    fn scrollbar_is_hidden_when_nothing_to_scroll() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut terminal = Terminal::new(TestBackend::new(10, 5)).unwrap();
+        terminal
+            .draw(|f| render_right_scrollbar(f, f.area(), 0, 0))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(
+            buf.content().iter().all(|cell| cell.symbol() == " "),
+            "expected nothing to be drawn when max_line_offset is 0"
+        );
+    }
+
+    #[test]
+    fn scrollbar_is_shown_when_there_is_something_to_scroll() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut terminal = Terminal::new(TestBackend::new(10, 5)).unwrap();
+        terminal
+            .draw(|f| render_right_scrollbar(f, f.area(), 0, 3))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(
+            buf.content().iter().any(|cell| cell.symbol() != " "),
+            "expected the scrollbar to draw something when max_line_offset is nonzero"
+        );
+    }
+
+    // --- help modal: popup width must fit the widest line past its own padding ---
+
+    #[test]
+    fn widest_entry_line_is_not_clipped_by_the_popups_own_padding() {
+        use crate::changes::Changes;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let dir = std::env::temp_dir().join(format!(
+            "opsxexplorer-help-width-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(dir.join("openspec/changes")).unwrap();
+        let mut app = App::new(Changes::discover(&dir).unwrap());
+        app.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+
+        // Wide enough that the popup renders at its natural content width,
+        // not clamped by the frame.
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|f| render(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+
+        let widest_line_text = help::lines()
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .max_by_key(|text| text.chars().count())
+            .unwrap();
+
+        let rendered_contains_it = (0..buf.area.height).any(|y| {
+            let row: String = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
+            row.contains(widest_line_text.trim_end())
+        });
+        assert!(
+            rendered_contains_it,
+            "expected the widest content line ({widest_line_text:?}) to render in full, \
+             not clipped by the popup's border/padding"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

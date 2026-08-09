@@ -71,6 +71,16 @@ pub struct App {
     /// The right pane's visible row count as of the most recent render, mirroring
     /// `left_viewport_rows`.
     right_viewport_rows: usize,
+
+    help_open: bool,
+    help_line_offset: usize,
+    /// `max_line_offset` as computed by the most recent render, mirroring
+    /// `max_h_scroll` (see design.md): the modal's content is fixed, but its
+    /// available height isn't, so this still needs to come from the renderer.
+    help_max_line_offset: usize,
+    /// The help modal's visible row count as of the most recent render,
+    /// mirroring `right_viewport_rows`.
+    help_viewport_rows: usize,
 }
 
 impl App {
@@ -91,6 +101,11 @@ impl App {
             line_offset: 0,
             max_line_offset: 0,
             right_viewport_rows: 0,
+
+            help_open: false,
+            help_line_offset: 0,
+            help_max_line_offset: 0,
+            help_viewport_rows: 0,
         };
         app.recompute_diff();
         app
@@ -165,6 +180,30 @@ impl App {
         self.right_viewport_rows = rows;
     }
 
+    pub fn help_open(&self) -> bool {
+        self.help_open
+    }
+
+    pub fn help_line_offset(&self) -> usize {
+        self.help_line_offset
+    }
+
+    pub fn set_help_line_offset(&mut self, offset: usize) {
+        self.help_line_offset = offset;
+    }
+
+    /// Called by the modal's renderer after computing the current `max_line_offset`,
+    /// mirroring `set_max_h_scroll`.
+    pub fn set_help_max_line_offset(&mut self, max_line_offset: usize) {
+        self.help_max_line_offset = max_line_offset;
+    }
+
+    /// Called by the modal's renderer after computing its inner height, mirroring
+    /// `set_right_viewport_rows`.
+    pub fn set_help_viewport_rows(&mut self, rows: usize) {
+        self.help_viewport_rows = rows;
+    }
+
     pub fn pane_view(&self) -> PaneView {
         match &self.diff_state {
             DiffPaneState::NotAChange => PaneView::NotAChange,
@@ -182,6 +221,14 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) {
+        if key.code == KeyCode::Char('?') {
+            self.toggle_help();
+            return;
+        }
+        if self.help_open {
+            self.handle_help_key(key);
+            return;
+        }
         if key.code == KeyCode::Tab {
             self.focus = match self.focus {
                 Focus::Left => Focus::Right,
@@ -193,6 +240,43 @@ impl App {
             Focus::Left => self.handle_left_key(key),
             Focus::Right => self.handle_right_key(key),
         }
+    }
+
+    /// Opens or closes the help modal, resetting scroll to the top on open — the
+    /// modal has no state of its own to preserve, unlike the panes it overlays.
+    fn toggle_help(&mut self) {
+        self.help_open = !self.help_open;
+        if self.help_open {
+            self.help_line_offset = 0;
+        }
+    }
+
+    /// Line-by-line scrolling, not selection-based: the modal has nothing
+    /// selectable, so `j`/`k`/`Ctrl+d`/`Ctrl+u` move the viewport itself
+    /// rather than a cursor, the same way `h`/`l` scroll the left pane. This
+    /// also means the very first line is always reachable, unlike scrolling
+    /// that's clamped to a selectable row's position.
+    fn handle_help_key(&mut self, key: KeyEvent) {
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            match key.code {
+                KeyCode::Char('d') => self.scroll_help(half_page(self.help_viewport_rows)),
+                KeyCode::Char('u') => self.scroll_help(-half_page(self.help_viewport_rows)),
+                _ => {}
+            }
+            return;
+        }
+        match key.code {
+            KeyCode::Esc => self.help_open = false,
+            KeyCode::Up | KeyCode::Char('k') => self.scroll_help(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.scroll_help(1),
+            _ => {}
+        }
+    }
+
+    fn scroll_help(&mut self, delta: isize) {
+        let new =
+            (self.help_line_offset as isize + delta).clamp(0, self.help_max_line_offset as isize);
+        self.help_line_offset = new as usize;
     }
 
     fn handle_left_key(&mut self, key: KeyEvent) {
@@ -1097,5 +1181,148 @@ mod tests {
             Some(0),
             "left pane selection must not move while the right pane is focused"
         );
+    }
+
+    // --- help modal ---
+
+    #[test]
+    fn question_mark_opens_and_closes_the_help_modal() {
+        let mut app = empty_app();
+        assert!(!app.help_open());
+        app.handle_key(key(KeyCode::Char('?')));
+        assert!(app.help_open());
+        app.handle_key(key(KeyCode::Char('?')));
+        assert!(!app.help_open());
+    }
+
+    #[test]
+    fn esc_also_closes_the_help_modal() {
+        let mut app = empty_app();
+        app.handle_key(key(KeyCode::Char('?')));
+        assert!(app.help_open());
+        app.handle_key(key(KeyCode::Esc));
+        assert!(!app.help_open());
+    }
+
+    #[test]
+    fn opening_the_modal_resets_scroll_to_the_top() {
+        let mut app = empty_app();
+        app.handle_key(key(KeyCode::Char('?')));
+        app.set_help_max_line_offset(20);
+        app.handle_key(key(KeyCode::Char('j')));
+        app.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(app.help_line_offset(), 2);
+
+        app.handle_key(key(KeyCode::Char('?'))); // close
+        app.handle_key(key(KeyCode::Char('?'))); // reopen
+        assert_eq!(app.help_line_offset(), 0);
+    }
+
+    #[test]
+    fn j_and_k_scroll_the_help_modal_by_one_line() {
+        let mut app = empty_app();
+        app.handle_key(key(KeyCode::Char('?')));
+        app.set_help_max_line_offset(20);
+
+        app.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(app.help_line_offset(), 1);
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(app.help_line_offset(), 2);
+
+        app.handle_key(key(KeyCode::Char('k')));
+        assert_eq!(app.help_line_offset(), 1);
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.help_line_offset(), 0);
+    }
+
+    #[test]
+    fn help_scroll_clamps_at_both_ends_without_needing_a_selectable_row() {
+        let mut app = empty_app();
+        app.handle_key(key(KeyCode::Char('?')));
+        app.set_help_max_line_offset(2);
+
+        // The very top (offset 0) is directly reachable, unlike a
+        // selection-based scroll that could get stuck below it.
+        app.handle_key(key(KeyCode::Char('k')));
+        assert_eq!(app.help_line_offset(), 0, "should clamp at the top");
+
+        for _ in 0..5 {
+            app.handle_key(key(KeyCode::Char('j')));
+        }
+        assert_eq!(app.help_line_offset(), 2, "should clamp at the bottom");
+    }
+
+    #[test]
+    fn ctrl_d_and_ctrl_u_scroll_the_help_modal_by_half_a_page() {
+        let mut app = empty_app();
+        app.handle_key(key(KeyCode::Char('?')));
+        app.set_help_viewport_rows(10);
+        app.set_help_max_line_offset(20);
+
+        app.handle_key(ctrl_key(KeyCode::Char('d')));
+        assert_eq!(app.help_line_offset(), 5);
+
+        app.handle_key(ctrl_key(KeyCode::Char('u')));
+        assert_eq!(app.help_line_offset(), 0);
+    }
+
+    #[test]
+    fn pane_scroll_expand_and_tab_keys_are_inert_while_the_help_modal_is_open() {
+        let mut app = app_with_loaded(vec![("cap", sample_diff("cap"))]);
+        app.set_max_h_scroll(10);
+        let focus_before = app.focus();
+        let h_scroll_before = app.h_scroll();
+        let tab_before = app.tab;
+        let expanded_before = app.expanded.clone();
+
+        app.handle_key(key(KeyCode::Char('?')));
+        for code in [
+            KeyCode::Char('h'),
+            KeyCode::Char('l'),
+            KeyCode::Left,
+            KeyCode::Right,
+            KeyCode::Char('['),
+            KeyCode::Char(']'),
+            KeyCode::Tab,
+            KeyCode::Char('^'),
+            KeyCode::Home,
+            KeyCode::Char('$'),
+            KeyCode::End,
+            KeyCode::Enter,
+            KeyCode::Char(' '),
+        ] {
+            app.handle_key(key(code));
+        }
+
+        assert_eq!(
+            app.focus(),
+            focus_before,
+            "Tab must not move focus while the modal is open"
+        );
+        assert_eq!(app.h_scroll(), h_scroll_before);
+        assert_eq!(app.tab, tab_before);
+        assert_eq!(app.expanded, expanded_before);
+    }
+
+    #[test]
+    fn closing_the_modal_leaves_pane_state_exactly_as_before_it_opened() {
+        let mut app = app_with_loaded(vec![("cap", sample_diff("cap"))]);
+        app.focus = Focus::Right;
+        let expected_focus = app.focus();
+        let expected_cursor = app.cursor;
+        let expected_line_offset = app.line_offset;
+        let expected_tab = app.tab;
+        let expected_expanded = app.expanded.clone();
+
+        app.handle_key(key(KeyCode::Char('?')));
+        app.set_help_max_line_offset(20);
+        app.handle_key(key(KeyCode::Char('j')));
+        app.handle_key(key(KeyCode::Char('?')));
+
+        assert_eq!(app.focus(), expected_focus);
+        assert_eq!(app.cursor, expected_cursor);
+        assert_eq!(app.line_offset, expected_line_offset);
+        assert_eq!(app.tab, expected_tab);
+        assert_eq!(app.expanded, expected_expanded);
     }
 }

@@ -281,7 +281,7 @@ When the right pane holds focus, the system SHALL move the cursor to the previou
 - **THEN** the cursor stops at the first or last selectable row rather than overshooting
 
 ### Requirement: The right pane scrolls vertically and indicates its scroll position
-Because a capability's diff can be taller than the pane, the right pane SHALL scroll vertically to keep the cursor visible as it moves, and SHALL indicate the current scroll position with a vertical scrollbar. The scrollbar SHALL be rendered whether or not the content overflows, showing its "nothing to scroll" state when it fits, so that the pane's layout does not shift as content changes. Scrolling SHALL advance by rendered line, so that a row wrapping onto several lines does not make scrolling skip content.
+Because a capability's diff can be taller than the pane, the right pane SHALL scroll vertically to keep the cursor visible as it moves, and SHALL indicate the current scroll position with a vertical scrollbar shown only while the content overflows the pane; the scrollbar SHALL be hidden entirely when the content fits. Scrolling SHALL advance by rendered line, so that a row wrapping onto several lines does not make scrolling skip content.
 
 #### Scenario: cursor moved below the visible area
 - **WHEN** the cursor moves to a row below the visible area
@@ -289,7 +289,11 @@ Because a capability's diff can be taller than the pane, the right pane SHALL sc
 
 #### Scenario: content shorter than the pane
 - **WHEN** the diff fits entirely within the pane
-- **THEN** the scrollbar is still shown, in its nothing-to-scroll state
+- **THEN** no scrollbar is rendered
+
+#### Scenario: content taller than the pane
+- **WHEN** the diff is taller than the pane
+- **THEN** the scrollbar is rendered, indicating the current scroll position
 
 #### Scenario: scrolling past a wrapped row
 - **WHEN** the content is scrolled through a row that wraps onto several lines
