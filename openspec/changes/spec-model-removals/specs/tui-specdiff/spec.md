@@ -107,6 +107,10 @@ Each removal-note line row SHALL follow the same fits-in-one-line-else-collapsib
 - **WHEN** a removal-note line's trimmed text is longer than the row's available width
 - **THEN** the row is collapsible, starts collapsed the first time the requirement is expanded, and renders a character-exact truncated excerpt ending in an ellipsis while collapsed
 
+#### Scenario: a collapsed removal-note line still de-asterisks its keyword
+- **WHEN** a collapsed removal-note line's truncated excerpt begins `**Reason**` or `**Migration**`
+- **THEN** the excerpt shows that keyword styled and without its surrounding `**` characters, the same as the fully rendered line — the keyword-stripping requirement applies to the collapsed excerpt, not only to the expanded line
+
 #### Scenario: expanding reveals the full removal-note line
 - **WHEN** a collapsed removal-note line row is expanded
 - **THEN** the full line is shown, wrapped to the pane width
