@@ -210,9 +210,9 @@ pub(crate) fn modified_style() -> Style {
     Style::new().fg(Color::Yellow)
 }
 
-/// The style for a scenario body's `WHEN`/`THEN` bullet keyword, layered on
-/// top of whatever style the keyword's characters already carry (e.g. a
-/// word-diff run's color) rather than replacing it.
+/// The style for a scenario body's `WHEN`/`THEN`/`AND` bullet keyword,
+/// layered on top of whatever style the keyword's characters already carry
+/// (e.g. a word-diff run's color) rather than replacing it.
 fn when_then_style() -> Style {
     Style::new().add_modifier(Modifier::BOLD)
 }
@@ -353,13 +353,13 @@ fn slice(s: &str, range: &Range<usize>) -> String {
     s.get(range.clone()).unwrap_or("").to_string()
 }
 
-/// Rewrites a scenario body's leading `- **WHEN**` / `- **THEN**` bullet
-/// keyword from its markdown-bold source form into a de-asterisked, styled
-/// keyword, matched at the start of each line on the row's flattened
-/// character stream so a keyword split across spans by word-diff
-/// highlighting is still caught. Every other character keeps its original
-/// style; the keyword's characters layer `when_then_style()` on top of
-/// theirs rather than replacing it (see design.md).
+/// Rewrites a scenario body's leading `- **WHEN**` / `- **THEN**` /
+/// `- **AND**` bullet keyword from its markdown-bold source form into a
+/// de-asterisked, styled keyword, matched at the start of each line on the
+/// row's flattened character stream so a keyword split across spans by
+/// word-diff highlighting is still caught. Every other character keeps its
+/// original style; the keyword's characters layer `when_then_style()` on
+/// top of theirs rather than replacing it (see design.md).
 fn style_when_then(spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
     let chars: Vec<(char, Style)> = spans
         .into_iter()
@@ -384,7 +384,7 @@ fn style_when_then(spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
                 let (_, style) = chars[i + 4 + k];
                 out.push((kc, style.patch(when_then_style())));
             }
-            i += 10; // "- **WHEN**" / "- **THEN**"
+            i += 4 + keyword.len() + 2; // "- **" + keyword + "**"
             at_line_start = false;
             continue;
         }
@@ -397,11 +397,12 @@ fn style_when_then(spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
     chars_to_spans(out)
 }
 
-/// Returns `"WHEN"` or `"THEN"` if `chars` opens with the literal bullet
-/// `- **WHEN**` / `- **THEN**`, matched on character content alone (the
-/// styles of the individual characters don't matter for the match).
+/// Returns `"WHEN"`, `"THEN"`, or `"AND"` if `chars` opens with the literal
+/// bullet `- **WHEN**` / `- **THEN**` / `- **AND**`, matched on character
+/// content alone (the styles of the individual characters don't matter for
+/// the match).
 fn bullet_keyword(chars: &[(char, Style)]) -> Option<&'static str> {
-    for keyword in ["WHEN", "THEN"] {
+    for keyword in ["WHEN", "THEN", "AND"] {
         let pattern: Vec<char> = format!("- **{keyword}**").chars().collect();
         if chars.len() >= pattern.len() && chars.iter().zip(&pattern).all(|(&(c, _), &p)| c == p) {
             return Some(keyword);
@@ -799,13 +800,16 @@ mod tests {
     #[test]
     fn when_then_bullets_lose_their_asterisks_and_gain_bold() {
         let piece = Piece::Unchanged {
-            text: "- **WHEN** a\n- **THEN** b".to_string(),
+            text: "- **WHEN** a\n- **THEN** b\n- **AND** c".to_string(),
         };
         let row = DiffRow::Body { piece: &piece };
         let spans = content_spans(&row);
 
         let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(text, "- WHEN a\n- THEN b");
+        // The "AND" bullet is one character shorter than "WHEN"/"THEN" (3
+        // letters vs. 4); if the rewrite still advanced by the length that
+        // fits a 4-letter keyword, the trailing " c" would be corrupted.
+        assert_eq!(text, "- WHEN a\n- THEN b\n- AND c");
         assert!(!text.contains('*'));
 
         let when = spans
@@ -819,6 +823,12 @@ mod tests {
             .find(|s| s.content.as_ref() == "THEN")
             .expect("expected a span exactly matching THEN");
         assert!(then.style.add_modifier.contains(Modifier::BOLD));
+
+        let and = spans
+            .iter()
+            .find(|s| s.content.as_ref() == "AND")
+            .expect("expected a span exactly matching AND");
+        assert!(and.style.add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]
@@ -831,12 +841,12 @@ mod tests {
             Run::Delete { base: 11..12 },
             Run::Insert { delta: 11..12 },
             Run::Equal {
-                base: 12..25,
-                delta: 12..25,
+                base: 12..37,
+                delta: 12..37,
             },
         ];
-        let base = "- **WHEN** a\n- **THEN** b";
-        let delta = "- **WHEN** x\n- **THEN** b";
+        let base = "- **WHEN** a\n- **THEN** b\n- **AND** c";
+        let delta = "- **WHEN** x\n- **THEN** b\n- **AND** c";
         let piece = Piece::Changed {
             base: base.to_string(),
             delta: delta.to_string(),
@@ -848,7 +858,7 @@ mod tests {
         let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
         // Both sides of the word-level diff are visible: the deleted "a"
         // and the inserted "x" that replaced it.
-        assert_eq!(text, "- WHEN ax\n- THEN b");
+        assert_eq!(text, "- WHEN ax\n- THEN b\n- AND c");
 
         // The inserted "x" that replaced "a" keeps the diff's insertion
         // color, unaffected by the keyword rewrite elsewhere in the row.
@@ -858,7 +868,7 @@ mod tests {
             .expect("expected a span exactly matching the inserted character");
         assert_eq!(inserted.style, added_style());
 
-        // The WHEN/THEN keywords are still de-asterisked and bold.
+        // The WHEN/THEN/AND keywords are still de-asterisked and bold.
         let when = spans
             .iter()
             .find(|s| s.content.as_ref() == "WHEN")
@@ -869,6 +879,11 @@ mod tests {
             .find(|s| s.content.as_ref() == "THEN")
             .expect("expected a span exactly matching THEN");
         assert!(then.style.add_modifier.contains(Modifier::BOLD));
+        let and = spans
+            .iter()
+            .find(|s| s.content.as_ref() == "AND")
+            .expect("expected a span exactly matching AND");
+        assert!(and.style.add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]
