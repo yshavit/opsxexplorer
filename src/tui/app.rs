@@ -941,7 +941,7 @@ mod tests {
     }
 
     #[test]
-    fn cursor_skips_group_headings_intro_blocks_bodies_and_notices() {
+    fn cursor_skips_group_headings_bodies_and_notices_but_stops_on_the_intro_row() {
         let mut diff = sample_diff("cap");
         diff.errors.push(DiffError::MissingBaseRequirement {
             capability: "cap".to_string(),
@@ -950,7 +950,7 @@ mod tests {
         let mut app = app_with_loaded(vec![("cap", diff)]);
         app.focus = Focus::Right;
 
-        // Expand the requirement and its scenario so Intro and Body rows exist too.
+        // Expand the requirement and its scenario so the intro and body rows exist too.
         app.expanded.insert(RowKey::Requirement {
             capability: "cap".to_string(),
             requirement: "Req".to_string(),
@@ -966,13 +966,21 @@ mod tests {
         // Sanity check: the tree actually contains every non-selectable kind under test.
         assert!(rows.iter().any(|r| matches!(r, DiffRow::Notice(_))));
         assert!(rows.iter().any(|r| matches!(r, DiffRow::GroupHeading(_))));
-        assert!(rows.iter().any(|r| matches!(r, DiffRow::Intro { .. })));
         assert!(rows.iter().any(|r| matches!(r, DiffRow::Body { .. })));
 
         // Cursor starts on the (only) requirement row.
         assert!(matches!(rows[app.cursor], DiffRow::Requirement { .. }));
 
-        // Moving down skips the Intro row and lands on the Scenario row.
+        // Moving down lands on the intro row: it is selectable, per the same
+        // exception the purpose row already has (see design.md).
+        app.handle_key(key(KeyCode::Char('j')));
+        let rows = app.diff_rows();
+        assert!(matches!(
+            rows[app.cursor],
+            DiffRow::Paragraph { .. } | DiffRow::ParagraphFull { .. }
+        ));
+
+        // Moving down again lands on the Scenario row.
         app.handle_key(key(KeyCode::Char('j')));
         let rows = app.diff_rows();
         assert!(matches!(rows[app.cursor], DiffRow::Scenario { .. }));
@@ -982,7 +990,15 @@ mod tests {
         app.handle_key(key(KeyCode::Char('j')));
         assert_eq!(app.cursor, cursor_before);
 
-        // Moving up skips the Intro row again and returns to the Requirement row.
+        // Moving up from the Scenario row returns to the intro row, then the
+        // Requirement row.
+        app.handle_key(key(KeyCode::Char('k')));
+        let rows = app.diff_rows();
+        assert!(matches!(
+            rows[app.cursor],
+            DiffRow::Paragraph { .. } | DiffRow::ParagraphFull { .. }
+        ));
+
         app.handle_key(key(KeyCode::Char('k')));
         let rows = app.diff_rows();
         assert!(matches!(rows[app.cursor], DiffRow::Requirement { .. }));
@@ -1070,8 +1086,8 @@ mod tests {
 
         let rows = app.diff_rows();
         assert!(
-            matches!(rows[app.cursor], DiffRow::PurposeFull(_)),
-            "expected cursor to start on the PurposeFull row"
+            matches!(rows[app.cursor], DiffRow::ParagraphFull { .. }),
+            "expected cursor to start on the ParagraphFull row"
         );
 
         let cursor_before = app.cursor;
@@ -1101,7 +1117,7 @@ mod tests {
 
         assert!(matches!(
             app.diff_rows()[app.cursor],
-            DiffRow::Purpose { .. }
+            DiffRow::Paragraph { .. }
         ));
         assert_eq!(app.diff_rows()[app.cursor].expanded(), Some(false));
 
@@ -1133,12 +1149,12 @@ mod tests {
         let rows = app.diff_rows();
         assert!(matches!(rows[0], DiffRow::Notice(_)));
         assert!(matches!(rows[1], DiffRow::PurposeHeading(_)));
-        assert!(matches!(rows[2], DiffRow::PurposeFull(_)));
+        assert!(matches!(rows[2], DiffRow::ParagraphFull { .. }));
         assert!(matches!(rows[3], DiffRow::GroupHeading(Operation::Added)));
 
         // The cursor starts on the first selectable row, skipping both the
         // notice and the purpose heading, landing directly on the purpose row.
-        assert!(matches!(rows[app.cursor], DiffRow::PurposeFull(_)));
+        assert!(matches!(rows[app.cursor], DiffRow::ParagraphFull { .. }));
 
         app.handle_key(key(KeyCode::Char('j')));
         let rows = app.diff_rows();
@@ -1156,7 +1172,7 @@ mod tests {
 
         assert!(matches!(
             app.diff_rows()[app.cursor],
-            DiffRow::Purpose { .. }
+            DiffRow::Paragraph { .. }
         ));
     }
 
@@ -1170,10 +1186,89 @@ mod tests {
         app.set_right_pane_width(10); // narrow: doesn't fit.
         app.reset_cursor_to_first_selectable();
         let cursor = app.cursor;
-        assert!(matches!(app.diff_rows()[cursor], DiffRow::Purpose { .. }));
+        assert!(matches!(app.diff_rows()[cursor], DiffRow::Paragraph { .. }));
 
         app.set_right_pane_width(200); // wide: fits.
-        assert!(matches!(app.diff_rows()[cursor], DiffRow::PurposeFull(_)));
+        assert!(matches!(
+            app.diff_rows()[cursor],
+            DiffRow::ParagraphFull { .. }
+        ));
+    }
+
+    // --- intro row wiring (unified-intro-collapsing) ---
+
+    fn diff_with_intro(capability: &str, intro: Piece) -> CapabilityDiff {
+        let mut diff = sample_diff(capability);
+        diff.requirements[0].intro = intro;
+        diff
+    }
+
+    fn expand_only_requirement(app: &mut App, capability: &str) {
+        app.expanded.insert(RowKey::Requirement {
+            capability: capability.to_string(),
+            requirement: "Req".to_string(),
+        });
+    }
+
+    #[test]
+    fn toggle_keys_on_a_fitting_intro_row_are_inert() {
+        let diff = diff_with_intro(
+            "cap",
+            Piece::Added {
+                delta: "short".to_string(),
+            },
+        );
+        let mut app = app_with_loaded(vec![("cap", diff)]);
+        app.focus = Focus::Right;
+        app.set_right_pane_width(200); // wide enough that "short" fits.
+        expand_only_requirement(&mut app, "cap");
+        app.reset_cursor_to_first_selectable();
+        app.handle_key(key(KeyCode::Char('j'))); // move from Requirement onto the intro row.
+
+        let rows = app.diff_rows();
+        assert!(
+            matches!(rows[app.cursor], DiffRow::ParagraphFull { indent: 1, .. }),
+            "expected cursor to stop on the intro's ParagraphFull row"
+        );
+
+        let cursor_before = app.cursor;
+        let expanded_before = app.expanded.clone();
+
+        for code in [
+            KeyCode::Enter,
+            KeyCode::Char(' '),
+            KeyCode::Char('l'),
+            KeyCode::Char('h'),
+        ] {
+            app.handle_key(key(code));
+        }
+
+        assert_eq!(app.cursor, cursor_before);
+        assert_eq!(app.expanded, expanded_before);
+    }
+
+    #[test]
+    fn cursor_stops_on_a_non_fitting_intro_row_too() {
+        let text = "abcdefghijklmnopqrstuvwxyz".repeat(3);
+        let diff = diff_with_intro("cap", Piece::Added { delta: text });
+        let mut app = app_with_loaded(vec![("cap", diff)]);
+        app.focus = Focus::Right;
+        app.set_right_pane_width(10); // narrow enough that the text doesn't fit.
+        expand_only_requirement(&mut app, "cap");
+        app.reset_cursor_to_first_selectable();
+        app.handle_key(key(KeyCode::Char('j'))); // move from Requirement onto the intro row.
+
+        assert!(matches!(
+            app.diff_rows()[app.cursor],
+            DiffRow::Paragraph { indent: 1, .. }
+        ));
+        assert_eq!(app.diff_rows()[app.cursor].expanded(), Some(false));
+
+        app.handle_key(key(KeyCode::Char('l')));
+        assert_eq!(app.diff_rows()[app.cursor].expanded(), Some(true));
+
+        app.handle_key(key(KeyCode::Char('h')));
+        assert_eq!(app.diff_rows()[app.cursor].expanded(), Some(false));
     }
 
     // --- left pane: Enter/Space focus-shift ---

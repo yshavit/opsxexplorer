@@ -14,6 +14,10 @@ pub enum RowKey {
     Purpose {
         capability: String,
     },
+    Intro {
+        capability: String,
+        requirement: String,
+    },
     Requirement {
         capability: String,
         requirement: String,
@@ -32,25 +36,28 @@ pub enum DiffRow<'a> {
     GroupHeading(&'a Operation),
     /// A display-only heading introducing the purpose comparison below it.
     PurposeHeading(&'a Piece),
-    /// The purpose comparison's text fits in full on one line: no collapse
-    /// affordance, but still selectable (see design.md).
-    PurposeFull(&'a Piece),
-    /// The purpose comparison is collapsible: either its text doesn't fit
-    /// (`Added`/`Changed`), or it's a wholesale replacement, which is always
-    /// collapsible regardless of length.
-    Purpose {
+    /// A paragraph-shaped comparison (the capability's purpose, or a
+    /// requirement's intro) whose text fits in full on one line: no collapse
+    /// affordance, but still selectable (see design.md). `indent` is the
+    /// row's nesting depth: 0 for purpose, 1 for a requirement's intro.
+    ParagraphFull {
+        piece: &'a Piece,
+        indent: usize,
+    },
+    /// A paragraph-shaped comparison that is collapsible: either its text
+    /// doesn't fit at its own `indent`, or it's a wholesale replacement,
+    /// which is always collapsible regardless of length.
+    Paragraph {
         piece: &'a Piece,
         expanded: bool,
         key: RowKey,
+        indent: usize,
     },
     Requirement {
         name: &'a str,
         op: &'a Operation,
         expanded: bool,
         key: RowKey,
-    },
-    Intro {
-        piece: &'a Piece,
     },
     Scenario {
         name: &'a str,
@@ -70,20 +77,20 @@ impl DiffRow<'_> {
             self,
             DiffRow::Requirement { .. }
                 | DiffRow::Scenario { .. }
-                | DiffRow::Purpose { .. }
-                | DiffRow::PurposeFull(_)
+                | DiffRow::Paragraph { .. }
+                | DiffRow::ParagraphFull { .. }
         )
     }
 
     /// The collapse-state key for a selectable row, so key-based toggling
-    /// doesn't need to re-derive it from surrounding context. `PurposeFull`
+    /// doesn't need to re-derive it from surrounding context. `ParagraphFull`
     /// falls through to `None` deliberately: it has nothing to toggle (see
     /// design.md).
     pub fn key(&self) -> Option<&RowKey> {
         match self {
             DiffRow::Requirement { key, .. }
             | DiffRow::Scenario { key, .. }
-            | DiffRow::Purpose { key, .. } => Some(key),
+            | DiffRow::Paragraph { key, .. } => Some(key),
             _ => None,
         }
     }
@@ -92,7 +99,7 @@ impl DiffRow<'_> {
         match self {
             DiffRow::Requirement { expanded, .. }
             | DiffRow::Scenario { expanded, .. }
-            | DiffRow::Purpose { expanded, .. } => Some(*expanded),
+            | DiffRow::Paragraph { expanded, .. } => Some(*expanded),
             _ => None,
         }
     }
@@ -126,18 +133,60 @@ pub fn flatten<'a>(
             rows.push(DiffRow::GroupHeading(&req.op));
             last_kind = Some(discriminant(&req.op));
         }
-        push_requirement(&mut rows, diff, req, expanded);
+        push_requirement(&mut rows, diff, req, expanded, width);
     }
 
     rows
 }
 
-/// Pushes the purpose heading and its one content row. A wholesale
-/// replacement is always collapsible; an insertion or an ordinary edit is
-/// collapsible only when its current text, trimmed of trailing whitespace,
-/// doesn't fit the row's available width at `width` — the same budget the
-/// collapsed row's own truncation uses (`layout::purpose_available`), so the
-/// two decisions can never disagree (see design.md).
+/// Extracts a piece's "current text" — the single passage of ordinary text
+/// it renders when collapsed to an excerpt. Every `Piece` variant except
+/// `Replaced` is exactly one such passage; a wholesale replacement has no
+/// single "current text" and is always collapsible (see design.md).
+pub(crate) fn paragraph_text(piece: &Piece) -> Option<&str> {
+    match piece {
+        Piece::Unchanged { text } => Some(text),
+        Piece::Added { delta } => Some(delta),
+        Piece::Deleted { base } => Some(base),
+        Piece::Unmentioned { base } => Some(base),
+        Piece::Changed { delta, .. } => Some(delta),
+        Piece::Replaced { .. } => None,
+    }
+}
+
+/// Pushes a paragraph-shaped row (a purpose comparison or a requirement's
+/// intro) at the given `key`/`indent`. A wholesale replacement is always
+/// collapsible; any other piece is collapsible only when its current text,
+/// trimmed of trailing whitespace, doesn't fit the row's available width at
+/// `width`/`indent` — the same budget the collapsed row's own truncation
+/// uses (`layout::paragraph_available`), so the two decisions can never
+/// disagree (see design.md).
+fn push_paragraph_row<'a>(
+    rows: &mut Vec<DiffRow<'a>>,
+    piece: &'a Piece,
+    key: RowKey,
+    indent: usize,
+    width: usize,
+    expanded: &HashSet<RowKey>,
+) {
+    let row_expanded = expanded.contains(&key);
+
+    match paragraph_text(piece) {
+        Some(text)
+            if text.trim_end().chars().count() <= layout::paragraph_available(width, indent) =>
+        {
+            rows.push(DiffRow::ParagraphFull { piece, indent });
+        }
+        _ => rows.push(DiffRow::Paragraph {
+            piece,
+            expanded: row_expanded,
+            key,
+            indent,
+        }),
+    }
+}
+
+/// Pushes the purpose heading and its one content row.
 fn push_purpose<'a>(
     rows: &mut Vec<DiffRow<'a>>,
     diff: &'a CapabilityDiff,
@@ -150,23 +199,7 @@ fn push_purpose<'a>(
     let key = RowKey::Purpose {
         capability: diff.capability.clone(),
     };
-    let purpose_expanded = expanded.contains(&key);
-
-    let current_text = match piece {
-        Piece::Added { delta } | Piece::Changed { delta, .. } => Some(delta.as_str()),
-        _ => None,
-    };
-
-    match current_text {
-        Some(text) if text.trim_end().chars().count() <= layout::purpose_available(width) => {
-            rows.push(DiffRow::PurposeFull(piece));
-        }
-        _ => rows.push(DiffRow::Purpose {
-            piece,
-            expanded: purpose_expanded,
-            key,
-        }),
-    }
+    push_paragraph_row(rows, piece, key, 0, width, expanded);
 }
 
 fn push_requirement<'a>(
@@ -174,6 +207,7 @@ fn push_requirement<'a>(
     diff: &'a CapabilityDiff,
     req: &'a RequirementDiff,
     expanded: &HashSet<RowKey>,
+    width: usize,
 ) {
     let req_key = RowKey::Requirement {
         capability: diff.capability.clone(),
@@ -191,7 +225,11 @@ fn push_requirement<'a>(
         return;
     }
 
-    rows.push(DiffRow::Intro { piece: &req.intro });
+    let intro_key = RowKey::Intro {
+        capability: diff.capability.clone(),
+        requirement: req.name.clone(),
+    };
+    push_paragraph_row(rows, &req.intro, intro_key, 1, width, expanded);
 
     for scenario in &req.scenarios {
         let scenario_key = RowKey::Scenario {
@@ -280,6 +318,13 @@ mod tests {
         }
     }
 
+    fn intro_key(capability: &str, requirement: &str) -> RowKey {
+        RowKey::Intro {
+            capability: capability.to_string(),
+            requirement: requirement.to_string(),
+        }
+    }
+
     #[test]
     fn everything_collapsed_yields_one_row_per_requirement_plus_headings() {
         let diff = capability_diff(vec![
@@ -343,8 +388,9 @@ mod tests {
                     expanded: true,
                     key: req_key("cap", "Req"),
                 },
-                DiffRow::Intro {
+                DiffRow::ParagraphFull {
                     piece: &unchanged("the intro"),
+                    indent: 1,
                 },
                 DiffRow::Scenario {
                     name: "first",
@@ -385,8 +431,9 @@ mod tests {
                     expanded: true,
                     key: req_key("cap", "Req"),
                 },
-                DiffRow::Intro {
+                DiffRow::ParagraphFull {
                     piece: &unchanged("intro"),
+                    indent: 1,
                 },
                 DiffRow::Scenario {
                     name: "only",
@@ -443,7 +490,7 @@ mod tests {
     }
 
     #[test]
-    fn only_requirement_scenario_and_purpose_rows_are_selectable() {
+    fn only_requirement_scenario_and_paragraph_rows_are_selectable() {
         assert!(
             DiffRow::Requirement {
                 name: "x",
@@ -463,22 +510,30 @@ mod tests {
             .is_selectable()
         );
         assert!(
-            DiffRow::Purpose {
+            DiffRow::Paragraph {
                 piece: &added_purpose("x"),
                 expanded: false,
                 key: purpose_key("cap"),
+                indent: 0,
             }
             .is_selectable()
         );
-        assert!(DiffRow::PurposeFull(&added_purpose("x")).is_selectable());
+        assert!(
+            DiffRow::ParagraphFull {
+                piece: &added_purpose("x"),
+                indent: 0,
+            }
+            .is_selectable()
+        );
+        assert!(
+            DiffRow::ParagraphFull {
+                piece: &unchanged("x"),
+                indent: 1,
+            }
+            .is_selectable()
+        );
         assert!(!DiffRow::GroupHeading(&Operation::Added).is_selectable());
         assert!(!DiffRow::PurposeHeading(&added_purpose("x")).is_selectable());
-        assert!(
-            !DiffRow::Intro {
-                piece: &unchanged("x"),
-            }
-            .is_selectable()
-        );
         assert!(
             !DiffRow::Body {
                 piece: &unchanged("x"),
@@ -532,8 +587,12 @@ mod tests {
         )]);
         let rows = flatten(&diff, &HashSet::new(), WIDE);
         assert!(!rows.iter().any(|r| matches!(r, DiffRow::PurposeHeading(_))));
-        assert!(!rows.iter().any(|r| matches!(r, DiffRow::PurposeFull(_))));
-        assert!(!rows.iter().any(|r| matches!(r, DiffRow::Purpose { .. })));
+        assert!(
+            !rows
+                .iter()
+                .any(|r| matches!(r, DiffRow::ParagraphFull { .. }))
+        );
+        assert!(!rows.iter().any(|r| matches!(r, DiffRow::Paragraph { .. })));
     }
 
     #[test]
@@ -546,7 +605,7 @@ mod tests {
         let rows = flatten(&diff, &HashSet::new(), WIDE);
         assert!(matches!(rows[0], DiffRow::Notice(_)));
         assert!(matches!(rows[1], DiffRow::PurposeHeading(_)));
-        assert!(matches!(rows[2], DiffRow::PurposeFull(_)));
+        assert!(matches!(rows[2], DiffRow::ParagraphFull { indent: 0, .. }));
         assert!(matches!(rows[3], DiffRow::GroupHeading(Operation::Added)));
     }
 
@@ -554,8 +613,8 @@ mod tests {
     fn fitting_added_purpose_text_yields_purpose_full() {
         let diff = diff_with_purpose(added_purpose("short purpose text"));
         let rows = flatten(&diff, &HashSet::new(), WIDE);
-        assert!(matches!(rows[1], DiffRow::PurposeFull(_)));
-        assert!(!rows.iter().any(|r| matches!(r, DiffRow::Purpose { .. })));
+        assert!(matches!(rows[1], DiffRow::ParagraphFull { indent: 0, .. }));
+        assert!(!rows.iter().any(|r| matches!(r, DiffRow::Paragraph { .. })));
     }
 
     #[test]
@@ -563,23 +622,34 @@ mod tests {
         let long_text = "a very long purpose ".repeat(20);
         let diff = diff_with_purpose(changed_purpose(&long_text));
         let rows = flatten(&diff, &HashSet::new(), WIDE);
-        assert!(matches!(rows[1], DiffRow::Purpose { .. }));
-        assert!(!rows.iter().any(|r| matches!(r, DiffRow::PurposeFull(_))));
+        assert!(matches!(rows[1], DiffRow::Paragraph { indent: 0, .. }));
+        assert!(
+            !rows
+                .iter()
+                .any(|r| matches!(r, DiffRow::ParagraphFull { .. }))
+        );
     }
 
     #[test]
     fn replaced_purpose_always_yields_purpose_even_when_short() {
         // `replaced_purpose`'s texts are short enough to trivially fit `WIDE`,
-        // but a wholesale replacement is never rendered as `PurposeFull`.
+        // but a wholesale replacement is never rendered as `ParagraphFull`.
         let diff = diff_with_purpose(replaced_purpose());
         let rows = flatten(&diff, &HashSet::new(), WIDE);
-        assert!(matches!(rows[1], DiffRow::Purpose { .. }));
-        assert!(!rows.iter().any(|r| matches!(r, DiffRow::PurposeFull(_))));
+        assert!(matches!(rows[1], DiffRow::Paragraph { indent: 0, .. }));
+        assert!(
+            !rows
+                .iter()
+                .any(|r| matches!(r, DiffRow::ParagraphFull { .. }))
+        );
     }
 
     #[test]
     fn purpose_fulls_key_and_expanded_are_none() {
-        let row = DiffRow::PurposeFull(&added_purpose("x"));
+        let row = DiffRow::ParagraphFull {
+            piece: &added_purpose("x"),
+            indent: 0,
+        };
         assert!(row.key().is_none());
         assert!(row.expanded().is_none());
     }
@@ -603,10 +673,95 @@ mod tests {
         let diff = diff_with_purpose(added_purpose("0123456789"));
 
         let rows = flatten(&diff, &HashSet::new(), WIDE);
-        assert!(matches!(rows[1], DiffRow::PurposeFull(_)));
+        assert!(matches!(rows[1], DiffRow::ParagraphFull { indent: 0, .. }));
 
         // Narrow the pane down to nothing: the same text no longer fits.
         let rows = flatten(&diff, &HashSet::new(), 0);
-        assert!(matches!(rows[1], DiffRow::Purpose { .. }));
+        assert!(matches!(rows[1], DiffRow::Paragraph { indent: 0, .. }));
+    }
+
+    // --- intro rows (unified-intro-collapsing) ---
+
+    fn diff_with_intro(intro: Piece) -> CapabilityDiff {
+        capability_diff(vec![requirement("Req", Operation::Modified, intro, vec![])])
+    }
+
+    #[test]
+    fn intro_at_indent_1_fits_checks_against_the_narrower_indent_1_budget() {
+        // Long enough to not fit purpose's indent-0 budget either, but chosen
+        // so that at a width where indent 0 would just barely fit, indent 1
+        // (two extra columns of indent) does not.
+        let text = "a".repeat(layout::paragraph_available(40, 0));
+        let diff = diff_with_intro(unchanged(&text));
+        let mut expanded = HashSet::new();
+        expanded.insert(req_key("cap", "Req"));
+
+        let rows = flatten(&diff, &expanded, 40);
+        let intro_row = rows
+            .iter()
+            .find(|r| matches!(r, DiffRow::ParagraphFull { .. } | DiffRow::Paragraph { .. }))
+            .expect("expected an intro row");
+        assert!(
+            matches!(intro_row, DiffRow::Paragraph { indent: 1, .. }),
+            "expected the intro to be collapsible at indent 1: {intro_row:?}"
+        );
+    }
+
+    #[test]
+    fn intro_with_deleted_piece_gets_a_truncatable_excerpt() {
+        let long_text = "a very long deleted intro ".repeat(20);
+        let diff = diff_with_intro(Piece::Deleted {
+            base: long_text.clone(),
+        });
+        let mut expanded = HashSet::new();
+        expanded.insert(req_key("cap", "Req"));
+
+        let rows = flatten(&diff, &expanded, 40);
+        assert!(
+            rows.iter()
+                .any(|r| matches!(r, DiffRow::Paragraph { indent: 1, .. })),
+            "expected a collapsible intro row rather than an always-collapsible placeholder-only row"
+        );
+    }
+
+    #[test]
+    fn intro_with_unmentioned_piece_gets_a_truncatable_excerpt() {
+        let long_text = "a very long unmentioned intro ".repeat(20);
+        let diff = diff_with_intro(Piece::Unmentioned {
+            base: long_text.clone(),
+        });
+        let mut expanded = HashSet::new();
+        expanded.insert(req_key("cap", "Req"));
+
+        let rows = flatten(&diff, &expanded, 40);
+        assert!(
+            rows.iter()
+                .any(|r| matches!(r, DiffRow::Paragraph { indent: 1, .. })),
+            "expected a collapsible intro row rather than an always-collapsible placeholder-only row"
+        );
+    }
+
+    #[test]
+    fn intro_row_key_participates_in_the_expanded_set() {
+        let long_text = "a very long intro ".repeat(20);
+        let diff = diff_with_intro(unchanged(&long_text));
+        let mut expanded = HashSet::new();
+        expanded.insert(req_key("cap", "Req"));
+
+        let rows = flatten(&diff, &expanded, 40);
+        let intro_row = rows
+            .iter()
+            .find(|r| matches!(r, DiffRow::Paragraph { indent: 1, .. }))
+            .expect("expected a collapsible intro row");
+        assert_eq!(intro_row.expanded(), Some(false));
+        assert_eq!(intro_row.key(), Some(&intro_key("cap", "Req")));
+
+        expanded.insert(intro_key("cap", "Req"));
+        let rows = flatten(&diff, &expanded, 40);
+        let intro_row = rows
+            .iter()
+            .find(|r| matches!(r, DiffRow::Paragraph { indent: 1, .. }))
+            .expect("expected a collapsible intro row");
+        assert_eq!(intro_row.expanded(), Some(true));
     }
 }

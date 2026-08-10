@@ -335,14 +335,19 @@ fn build_diff_lines(
     for (i, row) in rows.iter().enumerate() {
         if in_cursor_block {
             let leaves_block = match row {
-                DiffRow::Intro { .. } | DiffRow::Body { .. } => false,
+                DiffRow::Body { .. } => false,
+                // A requirement's intro (indent 1) is part of the revealed
+                // content under it, like `Body`; the capability's purpose
+                // (indent 0) is not nested under a requirement, so it always
+                // leaves the block.
+                DiffRow::Paragraph { indent, .. } | DiffRow::ParagraphFull { indent, .. } => {
+                    *indent == 0
+                }
                 DiffRow::Scenario { .. } => !cursor_is_requirement,
                 DiffRow::Requirement { .. }
                 | DiffRow::GroupHeading(_)
                 | DiffRow::Notice(_)
-                | DiffRow::PurposeHeading(_)
-                | DiffRow::PurposeFull(_)
-                | DiffRow::Purpose { .. } => true,
+                | DiffRow::PurposeHeading(_) => true,
             };
             if leaves_block {
                 reveal_end = lines.len();
@@ -1004,7 +1009,10 @@ mod tests {
         let rows = vec![
             DiffRow::GroupHeading(&added),
             req_row_expanded("A", &added, true),
-            DiffRow::Intro { piece: &intro },
+            DiffRow::ParagraphFull {
+                piece: &intro,
+                indent: 1,
+            },
             scenario_row("S1", &body, true),
             DiffRow::Body { piece: &body },
             req_row("B", &added),
@@ -1024,7 +1032,10 @@ mod tests {
         let body1 = unchanged_piece("body one");
         let rows = vec![
             req_row_expanded("A", &added, true),
-            DiffRow::Intro { piece: &intro },
+            DiffRow::ParagraphFull {
+                piece: &intro,
+                indent: 1,
+            },
             scenario_row("S1", &body1, false),
             req_row("B", &added),
         ];
@@ -1046,7 +1057,10 @@ mod tests {
         let body2 = unchanged_piece("body two");
         let rows = vec![
             req_row_expanded("A", &added, true),
-            DiffRow::Intro { piece: &intro },
+            DiffRow::ParagraphFull {
+                piece: &intro,
+                indent: 1,
+            },
             scenario_row("S1", &body1, true),
             DiffRow::Body { piece: &body1 },
             scenario_row("S2", &body2, false),
