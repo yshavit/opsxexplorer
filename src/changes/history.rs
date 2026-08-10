@@ -1,69 +1,78 @@
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::PathBuf;
 
-use git2::{Oid, Repository, Sort};
+use git2::{Repository, Sort};
 
 use crate::vfs::GitRef;
 
-use super::{Change, ChangesError};
+use super::Change;
 
-/// The earliest commit (reachable from HEAD) that introduced any file under a
-/// given path, along with its timestamp.
-struct CommitInfo {
-    oid: Oid,
-    time: i64,
+/// What history resolved for one archived change: the timestamp of the
+/// commit that first introduced its directory (used as a sort tiebreaker),
+/// and that commit's first parent as the diff base. `diff_base` is `None`
+/// when the introducing commit is a root commit with no parent — a case
+/// distinct from the change being absent from the map entirely (no
+/// introducing commit found at all).
+pub struct Resolution {
+    pub time: i64,
+    pub diff_base: Option<GitRef>,
 }
 
-/// Finds the earliest commit (reachable from HEAD) whose tree contains `path`.
-/// Returns `None` if the path is never found, or on any revwalk/git error.
-fn first_commit(repo: &Repository, path: &Path) -> Option<CommitInfo> {
-    let mut revwalk = repo.revwalk().ok()?;
-    revwalk.push_head().ok()?;
-    revwalk.set_sorting(Sort::TIME | Sort::REVERSE).ok()?;
+/// Resolves every archived change's introducing commit in a single
+/// traversal of history (reachable from HEAD, oldest first): each
+/// still-unresolved change is probed at every commit, and its *first*
+/// sighting — the first commit whose tree contains the change's directory —
+/// is recorded and the change dropped from the working set. The traversal
+/// ends early once every change is resolved.
+///
+/// A change absent from the returned map has no resolvable introducing
+/// commit: its directory was never committed, or a revwalk/git error ended
+/// the traversal before it was reached. On such an error, changes already
+/// resolved are kept; only the remainder go unresolved.
+pub fn resolve_all(repo: &Repository, changes: &[Change]) -> HashMap<Change, Resolution> {
+    let mut resolved = HashMap::new();
+    let mut pending: Vec<(&Change, PathBuf)> = changes
+        .iter()
+        .map(|change| (change, change.relative_path()))
+        .collect();
+
+    let revwalk = (|| -> Result<_, git2::Error> {
+        let mut revwalk = repo.revwalk()?;
+        revwalk.push_head()?;
+        revwalk.set_sorting(Sort::TIME | Sort::REVERSE)?;
+        Ok(revwalk)
+    })();
+    let Ok(revwalk) = revwalk else {
+        return resolved;
+    };
 
     for oid in revwalk {
-        let oid = oid.ok()?;
-        let commit = repo.find_commit(oid).ok()?;
-        let tree = commit.tree().ok()?;
-        if tree.get_path(path).is_ok() {
-            return Some(CommitInfo {
-                oid,
-                time: commit.time().seconds(),
-            });
+        if pending.is_empty() {
+            break;
         }
+        let Ok(oid) = oid else { break };
+        let Ok(commit) = repo.find_commit(oid) else {
+            break;
+        };
+        let Ok(tree) = commit.tree() else { break };
+
+        pending.retain(|(change, path)| {
+            if tree.get_path(path).is_err() {
+                return true;
+            }
+            let diff_base = commit.parent_id(0).ok().map(|oid| GitRef { oid });
+            resolved.insert(
+                (*change).clone(),
+                Resolution {
+                    time: commit.time().seconds(),
+                    diff_base,
+                },
+            );
+            false
+        });
     }
 
-    None
-}
-
-/// Resolves the diff base for an archived change: the commit immediately
-/// before the earliest commit (reachable from HEAD) that introduced any file
-/// under the change's directory.
-///
-/// Real history can touch that directory more than once (files added across
-/// a few commits, later corrections); anchoring to the earliest such commit
-/// sidesteps having to identify one single "the archiving commit".
-pub fn resolve_archive_base(repo: &Repository, change: &Change) -> Result<GitRef, ChangesError> {
-    let path = change.relative_path();
-
-    let commit_info = first_commit(repo, &path)
-        .ok_or_else(|| ChangesError::ArchiveHistoryNotFound(change.clone()))?;
-
-    match repo
-        .find_commit(commit_info.oid)
-        .ok()
-        .and_then(|c| c.parent_id(0).ok())
-    {
-        Some(oid) => Ok(GitRef { oid }),
-        None => Err(ChangesError::ArchiveHistoryNotFound(change.clone())),
-    }
-}
-
-/// The timestamp of the commit that first introduced `change`'s directory in
-/// git history. Returns `None` on any failure to resolve it (path never
-/// committed, revwalk/git error) — infallible from the caller's perspective,
-/// suited for use as a sort tiebreaker rather than an error condition.
-pub fn first_commit_time(repo: &Repository, change: &Change) -> Option<i64> {
-    first_commit(repo, &change.relative_path()).map(|c| c.time)
+    resolved
 }
 
 #[cfg(test)]
@@ -73,8 +82,68 @@ mod tests {
     use git2::Repository;
 
     #[test]
-    fn first_commit_time_is_the_introducing_commits_own_timestamp() {
-        let dir = TempDir::new("history-first-commit-time");
+    fn resolve_all_records_each_change_at_its_own_introducing_commit() {
+        let dir = TempDir::new("history-resolve-all-multi");
+        let repo = Repository::init(dir.path()).unwrap();
+
+        write_file(dir.path(), "openspec/specs/cap/spec.md", "v1");
+        let spec_v1 =
+            stage_and_commit_at(&repo, "spec v1", &["openspec/specs/cap/spec.md"], 1_000_000);
+
+        // Introduce "aaa", then an unrelated commit, then "bbb" - interleaved,
+        // so a batched traversal must not conflate the two changes. Explicit
+        // timestamps avoid same-second ties under `Sort::TIME`.
+        write_file(
+            dir.path(),
+            "openspec/changes/archive/2026-01-01-aaa/proposal.md",
+            "x",
+        );
+        let aaa_base = spec_v1;
+        stage_and_commit_at(
+            &repo,
+            "archive aaa",
+            &["openspec/changes/archive/2026-01-01-aaa/proposal.md"],
+            1_000_100,
+        );
+
+        write_file(dir.path(), "openspec/specs/cap/spec.md", "v2-unrelated");
+        let unrelated = stage_and_commit_at(
+            &repo,
+            "unrelated",
+            &["openspec/specs/cap/spec.md"],
+            1_000_200,
+        );
+
+        write_file(
+            dir.path(),
+            "openspec/changes/archive/2026-01-01-bbb/proposal.md",
+            "y",
+        );
+        let bbb_base = unrelated;
+        stage_and_commit_at(
+            &repo,
+            "archive bbb",
+            &["openspec/changes/archive/2026-01-01-bbb/proposal.md"],
+            1_000_300,
+        );
+
+        let aaa = Change("archive/2026-01-01-aaa".to_string());
+        let bbb = Change("archive/2026-01-01-bbb".to_string());
+        let resolved = resolve_all(&repo, &[aaa.clone(), bbb.clone()]);
+
+        assert_eq!(
+            resolved.get(&aaa).unwrap().diff_base,
+            Some(GitRef { oid: aaa_base })
+        );
+        assert_eq!(
+            resolved.get(&bbb).unwrap().diff_base,
+            Some(GitRef { oid: bbb_base })
+        );
+    }
+
+    #[test]
+    fn resolve_all_uses_first_sighting_not_a_later_touch() {
+        let dir = TempDir::new("history-resolve-all-first-sighting");
         let repo = Repository::init(dir.path()).unwrap();
 
         write_file(dir.path(), "openspec/specs/cap/spec.md", "v1");
@@ -111,24 +180,26 @@ mod tests {
         );
 
         let change = Change("archive/2026-01-01-old-thing".to_string());
-        assert_eq!(first_commit_time(&repo, &change), Some(introducing_time));
+        let resolved = resolve_all(&repo, std::slice::from_ref(&change));
+        assert_eq!(resolved.get(&change).unwrap().time, introducing_time);
     }
 
     #[test]
-    fn first_commit_time_is_none_for_never_committed_change() {
-        let dir = TempDir::new("history-first-commit-time-uncommitted");
+    fn resolve_all_omits_never_committed_change() {
+        let dir = TempDir::new("history-resolve-all-uncommitted");
         let repo = Repository::init(dir.path()).unwrap();
 
         write_file(dir.path(), "openspec/specs/cap/spec.md", "v1");
         stage_and_commit(&repo, "spec v1", &["openspec/specs/cap/spec.md"]);
 
         let change = Change("archive/2026-01-01-never-committed".to_string());
-        assert_eq!(first_commit_time(&repo, &change), None);
+        let resolved = resolve_all(&repo, std::slice::from_ref(&change));
+        assert!(!resolved.contains_key(&change));
     }
 
     #[test]
-    fn first_commit_time_resolves_for_root_commit_introduction() {
-        let dir = TempDir::new("history-first-commit-time-root");
+    fn resolve_all_distinguishes_root_commit_from_unresolvable() {
+        let dir = TempDir::new("history-resolve-all-root");
         let repo = Repository::init(dir.path()).unwrap();
 
         write_file(
@@ -150,9 +221,12 @@ mod tests {
             .seconds();
 
         let change = Change("archive/2026-01-01-old-thing".to_string());
-        assert_eq!(first_commit_time(&repo, &change), Some(root_time));
+        let resolved = resolve_all(&repo, std::slice::from_ref(&change));
 
-        // resolve_archive_base, by contrast, errors here: the root commit has no parent.
-        assert!(resolve_archive_base(&repo, &change).is_err());
+        // Present in the map (unlike a never-committed change) with a
+        // timestamp, but no diff base: the root commit has no parent.
+        let resolution = resolved.get(&change).unwrap();
+        assert_eq!(resolution.time, root_time);
+        assert_eq!(resolution.diff_base, None);
     }
 }

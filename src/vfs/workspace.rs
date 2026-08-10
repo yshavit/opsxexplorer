@@ -37,6 +37,11 @@ impl Workspace {
         Fs::Disk(DiskFs::new(self.root.clone()))
     }
 
+    /// The repository handle backing this workspace, if `start` was inside one.
+    pub fn repo(&self) -> Option<&Repository> {
+        self.repo.as_ref()
+    }
+
     pub fn at(&self, r: &GitRef) -> Result<Fs<'_>, FsError> {
         let repo = self.repo.as_ref().ok_or(FsError::NotAGitRepo)?;
         Ok(Fs::Git(GitTreeFs::new(repo, r.oid)))
