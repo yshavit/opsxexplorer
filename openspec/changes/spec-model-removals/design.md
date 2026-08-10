@@ -1,0 +1,35 @@
+## Context
+
+See `proposal.md` - Why. Three pieces of the pipeline need to change together: `spec-model` (parsing), `spec-diff` (comparison), and `tui-specdiff` (rendering). The relevant current code:
+
+- `src/specs/parse.rs:161-174` special-cases `DeltaOp::Removed` inside `parse_delta_entries_section`, hard-coding `intro: String::new(), scenarios: Vec::new()` instead of calling `parse_requirement`.
+- `src/specs/model.rs`'s `DeltaEntry` doc comment asserts a removed entry always has an empty `intro` and `scenarios: []` - stale once the above changes.
+- `src/diff/model.rs`'s `Operation` enum has `Removed` as a unit variant and `Renamed { from: String }` as a variant carrying data; `RequirementDiff.intro: Piece` is populated for a removed requirement from `src/diff/mod.rs`'s `diff()` as `Piece::Deleted { base: base_req.intro.clone() }`, entirely from the spec of record.
+- `src/tui/layout.rs` and `src/tui/diff_row.rs` match on `Operation::Removed` as a unit variant in several places (marker/style lookup, group-heading lookup, tests).
+
+## Goals / Non-Goals
+
+**Goals:**
+- A removed requirement's own body text (conventionally Reason + Migration) survives parsing, is exposed as a distinct value through the diff, and is rendered in the pane.
+- The `spec-diff` spec's factually wrong justification ("a removal entry has none") is corrected in place.
+
+**Non-Goals:**
+- No typed `Reason` / `Migration` split. The body is carried as one opaque string, the same way a requirement's `intro` already is.
+- No validation of a removal entry's body content (e.g. requiring it to actually contain a Reason/Migration pair). OpenSpec's convention is authoring guidance, not something this tool enforces elsewhere (it doesn't validate intro/scenario content either).
+- No change to how a `#### Scenario:` heading under a REMOVED entry is handled beyond "it parses like any other scenario" - nothing currently consumes `DeltaEntry.requirement.scenarios` for a removed entry (the diff still recovers scenarios from the base), so this is inert, not a new feature.
+
+## Decisions
+
+**Reuse `Requirement.intro` for a removed entry's body, rather than adding a new field to `Requirement` or `DeltaEntry`.** The issue that prompted this change asked exactly this question. Dropping the `DeltaOp::Removed` special case in `parse_delta_entries_section` and calling `parse_requirement` uniformly is the minimal change, and it already treats "no body" and "empty body" as the same thing (`""`) via the existing convention documented on `Requirement.intro` - consistent with the rest of `spec-model`, no new type. The alternative - a typed field parsed specifically as `Reason` / `Migration` - would commit the parser to a two-heading convention that OpenSpec's docs recommend but do not enforce, and would need its own error handling for malformed input. Not worth it for a value that is only ever displayed, never further interpreted.
+
+**Carry the note on `Operation::Removed { note: String }`, not as a new `Piece` variant or a new field on `RequirementDiff`.** The issue's own analysis is right: `Piece`'s five states (`Unchanged`/`Changed`/`Replaced`/`Added`/`Deleted`/`Unmentioned`) all describe a comparison between a base text and a delta text, or the absence of one side of that comparison, and a removal note has no base counterpart at all - shoehorning it into `Piece::Added` would be technically workable but would misrepresent it as a diffed comparison. Putting it on `Operation::Removed` rather than a top-level `Option<String>` on `RequirementDiff` mirrors the existing `Operation::Renamed { from: String }` - operation-specific data belongs on the operation, and `note` is meaningless for every op besides `Removed`. `note: String` (not `Option<String>`) for the same reason `Requirement.intro` is a plain `String`: empty and absent are the same thing here, since OpenSpec's own source has no way to distinguish "no body" from "a body of zero content."
+
+**Render the removal note as its own row above the intro row, reusing the intro row's collapse convention wholesale.** `tui-specdiff` already has an established pattern for "a passage of text that might not fit in one line" (the purpose row and the intro row both: fits-in-full when short, collapsible-with-ellipsis when long, starts collapsed on first expand). The removal note is the same shape of content (one passage of text, no runs to interleave since there's no base side to diff against), so it gets the same treatment rather than a new one. It renders with insertion styling (green/added), not deletion styling, since - unlike the intro and scenario rows below it - it is new text the delta introduced, not content being taken away. It must be added to "Only collapsible rows are selectable"'s exception list, or cursor navigation would skip over it entirely and violate that requirement's own stated invariant that row-by-row movement reaches every visible row.
+
+**Position: above the intro row, not below or interleaved with scenarios.** A removal note explains *why* a requirement is going away and *what to do instead* - a reader wants that context before the old content it's now looking at, not after.
+
+## Risks / Trade-offs
+
+- [Every existing `match ... Operation::Removed` in `src/tui/layout.rs` and `src/tui/diff_row.rs` (and their tests) stops compiling once `Removed` carries a field] → This is deliberate and mechanical: Rust's exhaustiveness checking will point at every call site; each becomes `Operation::Removed { .. }` or `Operation::Removed { note }` depending on whether the site needs the note. No behavioral risk, just a compile-time todo list (see `tasks.md`).
+- [A removal entry that mistakenly includes a `#### Scenario:` heading now parses instead of being silently ignored, and those scenarios are simply unused by `diff()`] → Acceptable: it's neither an error today (the old code didn't reject it structurally, it discarded it) nor a supported feature; behavior is merely "parses, then goes unused," which is a strict improvement over "discarded during parsing" for debuggability, and requires no new error-handling code.
+- [The `spec-diff` and `tui-specdiff` deltas both restate large existing requirements in full ("Only collapsible rows are selectable" gains two new scenarios among eleven) per this repo's own MODIFIED-requirements convention (copy the entire block, edit in place)] → No functional risk; it does make the diff of this change's own delta spec files noisier than the underlying behavioral change. Accepted as the cost of following the established authoring convention (confirmed against `openspec/changes/archive/2026-08-10-scenarios-ordering/specs/spec-diff/spec.md`, which does the same).
