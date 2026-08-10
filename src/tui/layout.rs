@@ -213,14 +213,13 @@ pub(crate) fn added_style() -> Style {
 }
 
 /// The style for removed text content (a deletion run, a deleted piece, or
-/// the base side of a replacement): red, struck through.
+/// the base side of a replacement): red.
 fn removed_text_style() -> Style {
-    removed_marker_style().add_modifier(Modifier::CROSSED_OUT)
+    removed_marker_style()
 }
 
 /// The style for removed markers and labels — gutter markers, the `REQ`
-/// label — that carries the "removed" color without the strikeout, since a
-/// strikeout only reads sensibly over prose.
+/// label.
 fn removed_marker_style() -> Style {
     Style::new().fg(Color::Red)
 }
@@ -266,9 +265,9 @@ fn content_spans(row: &DiffRow) -> Vec<Span<'static>> {
                         Style::new().add_modifier(Modifier::DIM),
                     ));
                     spans.push(Span::styled(" → ", modified_style()));
-                    spans.push(Span::raw((*name).to_string()));
+                    spans.push(Span::styled((*name).to_string(), operation_style(op)));
                 }
-                _ => spans.push(Span::raw((*name).to_string())),
+                _ => spans.push(Span::styled((*name).to_string(), operation_style(op))),
             }
             spans
         }
@@ -283,7 +282,7 @@ fn content_spans(row: &DiffRow) -> Vec<Span<'static>> {
                 Span::raw(expand_arrow(*expanded)),
                 Span::styled("§", marker_style),
                 Span::raw(" "),
-                Span::raw((*name).to_string()),
+                Span::styled((*name).to_string(), marker_style),
             ]
         }
         DiffRow::Body { piece } => style_when_then(piece_spans(piece)),
@@ -797,7 +796,7 @@ mod tests {
     }
 
     #[test]
-    fn renamed_requirement_dims_the_old_name_and_colors_the_arrow_like_modified() {
+    fn renamed_requirement_dims_the_old_name_and_colors_the_arrow_and_new_name_like_modified() {
         let row = DiffRow::Requirement {
             name: "New Name",
             op: &Operation::Renamed {
@@ -814,18 +813,20 @@ mod tests {
             .expect("expected a span exactly matching the old name");
         assert!(old_name.style.add_modifier.contains(Modifier::DIM));
 
-        let arrow = spans
+        // The arrow and the new name now share `modified_style()`, so
+        // `chars_to_spans` coalesces them into one span rather than keeping
+        // them separate.
+        let arrow_and_new_name = spans
             .iter()
-            .find(|s| s.content.as_ref() == " → ")
-            .expect("expected a span exactly matching the arrow");
-        assert_eq!(arrow.style, modified_style());
-
-        let new_name = spans
-            .iter()
-            .find(|s| s.content.as_ref() == "New Name")
-            .expect("expected a span exactly matching the new name");
-        assert!(!new_name.style.add_modifier.contains(Modifier::DIM));
-        assert_ne!(new_name.style, modified_style());
+            .find(|s| s.content.as_ref() == " → New Name")
+            .expect("expected the arrow and new name merged into one span");
+        assert!(
+            !arrow_and_new_name
+                .style
+                .add_modifier
+                .contains(Modifier::DIM)
+        );
+        assert_eq!(arrow_and_new_name.style, modified_style());
     }
 
     #[test]
