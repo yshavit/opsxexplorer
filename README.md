@@ -5,6 +5,14 @@ TUI viewer for [OpenSpec] spec diffs.
 > [!IMPORTANT]
 > Not affiliated with OpenSpec. This is my own, independent project.
 
+## Installing
+
+```shell
+cargo install --git https://github.com/yshavit/opsxexplorer
+```
+
+(I can build and distribute binaries if people want. Just open an Issue.)
+
 ## Why?
 
 Each change in OpenSpec creates a few files: a proposal explaining the value of
@@ -33,6 +41,12 @@ This is a glorified diff viewer, optimized for OpenSpec's `spec.md` format.
 Nothing more.
 
 [OpenSpec]: https://openspec.dev/
+
+## Usage
+
+- `q` to quit
+- `?` to show help
+- I'll let the help screen do the rest of the talking :-)
 
 ## Development
 
