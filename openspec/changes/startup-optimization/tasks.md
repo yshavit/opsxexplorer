@@ -35,4 +35,4 @@
 - [ ] 5.2 Verify on a real repo — the 34-change one from issue #15 — not only on synthetic repos, per design.md — Risks
 - [x] 5.3 Check that selecting archived changes in the TUI no longer costs a traversal per selection, by navigating the archived list in a large repo and confirming it feels responsive
 - [x] 5.4 Run `cargo fmt --check` and `cargo clippy` clean
-- [ ] 5.5 Comment on issue #15 with the measured before/after, noting that options 2 and 3 are done and that option 4 remains deliberately not done
+- [x] 5.5 Comment on issue #15 with the measured before/after, noting that options 2 and 3 are done and that option 4 remains deliberately not done
