@@ -19,11 +19,20 @@ pub struct Resolution {
 }
 
 /// Resolves every archived change's introducing commit in a single
-/// traversal of history (reachable from HEAD, oldest first): each
-/// still-unresolved change is probed at every commit, and its *first*
-/// sighting — the first commit whose tree contains the change's directory —
-/// is recorded and the change dropped from the working set. The traversal
-/// ends early once every change is resolved.
+/// traversal of history (reachable from HEAD, ancestors visited before
+/// their descendants, with commit time breaking ties between commits with
+/// no ancestry relationship): each still-unresolved change is probed at
+/// every commit, and its *first* sighting — the first commit whose tree
+/// contains the change's directory — is recorded and the change dropped
+/// from the working set. The traversal ends early once every change is
+/// resolved.
+///
+/// Ordering by ancestry rather than commit time alone matters because
+/// commit time is only a proxy for ancestry: clock skew or an overridden
+/// `GIT_COMMITTER_DATE` can give a commit an earlier timestamp than its own
+/// parent. A purely time-ordered walk could then reach that descendant
+/// before the ancestor that actually introduced the directory, resolving
+/// the wrong commit as the introducer.
 ///
 /// A change absent from the returned map has no resolvable introducing
 /// commit: its directory was never committed, or a revwalk/git error ended
@@ -39,7 +48,7 @@ pub fn resolve_all(repo: &Repository, changes: &[Change]) -> HashMap<Change, Res
     let revwalk = (|| -> Result<_, git2::Error> {
         let mut revwalk = repo.revwalk()?;
         revwalk.push_head()?;
-        revwalk.set_sorting(Sort::TIME | Sort::REVERSE)?;
+        revwalk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME | Sort::REVERSE)?;
         Ok(revwalk)
     })();
     let Ok(revwalk) = revwalk else {
@@ -195,6 +204,51 @@ mod tests {
         let change = Change("archive/2026-01-01-never-committed".to_string());
         let resolved = resolve_all(&repo, std::slice::from_ref(&change));
         assert!(!resolved.contains_key(&change));
+    }
+
+    #[test]
+    fn resolve_all_uses_ancestry_not_committer_time_under_clock_skew() {
+        let dir = TempDir::new("history-resolve-all-clock-skew");
+        let repo = Repository::init(dir.path()).unwrap();
+
+        write_file(dir.path(), "openspec/specs/cap/spec.md", "v1");
+        let spec_v1 =
+            stage_and_commit_at(&repo, "spec v1", &["openspec/specs/cap/spec.md"], 1_000_000);
+
+        // P introduces the change directory at a later committer time...
+        write_file(
+            dir.path(),
+            "openspec/changes/archive/2026-01-01-skewed/proposal.md",
+            "x",
+        );
+        stage_and_commit_at(
+            &repo,
+            "archive skewed",
+            &["openspec/changes/archive/2026-01-01-skewed/proposal.md"],
+            1_000_100,
+        );
+
+        // ...and Q, P's child, has an earlier committer time (clock skew /
+        // GIT_COMMITTER_DATE override). A purely time-ordered walk would
+        // visit Q before P and misresolve the introducing commit.
+        write_file(dir.path(), "openspec/specs/cap/spec.md", "v2-unrelated");
+        stage_and_commit_at(
+            &repo,
+            "unrelated, but skewed earlier",
+            &["openspec/specs/cap/spec.md"],
+            1_000_050,
+        );
+
+        let change = Change("archive/2026-01-01-skewed".to_string());
+        let resolved = resolve_all(&repo, std::slice::from_ref(&change));
+
+        let resolution = resolved.get(&change).unwrap();
+        assert_eq!(
+            resolution.diff_base,
+            Some(GitRef { oid: spec_v1 }),
+            "diff base should anchor to parent(P), not be misresolved via Q's earlier committer time"
+        );
+        assert_eq!(resolution.time, 1_000_100);
     }
 
     #[test]

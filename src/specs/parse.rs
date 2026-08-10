@@ -379,7 +379,7 @@ mod tests {
             ]
         );
         let total_scenarios: usize = spec.requirements.iter().map(|r| r.scenarios.len()).sum();
-        assert_eq!(total_scenarios, 17);
+        assert_eq!(total_scenarios, 18);
     }
 
     #[test]
