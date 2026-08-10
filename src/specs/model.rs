@@ -36,10 +36,13 @@ pub enum DeltaOp {
 
 /// A requirement tagged with the delta operation it was parsed from.
 ///
-/// A `Removed` entry is a `DeltaEntry` like any other, just with an empty
-/// `intro` and `scenarios: []` — a removal is genuinely a requirement
-/// identified by name, and its body is recovered from the base. See
-/// `2026-08-08-spec-model/design.md`.
+/// A `Removed` entry is a `DeltaEntry` like any other: its heading supplies
+/// its name, and any body content following the heading — conventionally a
+/// Reason and Migration explanation — is parsed into `intro` exactly as an
+/// added or modified entry's body would be. Its scenarios and intro have no
+/// bearing on the requirement's actual (deleted) content, which is instead
+/// recovered from the base spec. See `2026-08-08-spec-model/design.md` and
+/// `2026-08-10-spec-model-removals/design.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeltaEntry {
     pub op: DeltaOp,

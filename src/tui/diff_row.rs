@@ -19,6 +19,14 @@ pub enum RowKey {
         capability: String,
         requirement: String,
     },
+    /// One line of a removed requirement's removal note, addressed by its
+    /// index in `note.lines()` (stable across re-flattens, since the note's
+    /// text doesn't change while the requirement is on screen).
+    RemovalNoteLine {
+        capability: String,
+        requirement: String,
+        line: usize,
+    },
     Requirement {
         capability: String,
         requirement: String,
@@ -54,6 +62,21 @@ pub enum DiffRow<'a> {
     /// which is always collapsible regardless of length.
     Paragraph {
         piece: &'a Piece,
+        expanded: bool,
+        key: RowKey,
+        indent: usize,
+    },
+    /// One line of a removed requirement's removal note, shown in full: no
+    /// collapse affordance, but still selectable, mirroring `ParagraphFull`
+    /// (see `2026-08-10-spec-model-removals/design.md`).
+    RemovalNoteFull {
+        text: &'a str,
+        indent: usize,
+    },
+    /// One line of a removed requirement's removal note that doesn't fit at
+    /// `indent` and is therefore collapsible, mirroring `Paragraph`.
+    RemovalNoteLine {
+        text: &'a str,
         expanded: bool,
         key: RowKey,
         indent: usize,
@@ -94,6 +117,8 @@ impl DiffRow<'_> {
                 | DiffRow::Scenario { .. }
                 | DiffRow::Paragraph { .. }
                 | DiffRow::ParagraphFull { .. }
+                | DiffRow::RemovalNoteLine { .. }
+                | DiffRow::RemovalNoteFull { .. }
                 | DiffRow::UnrecognizedSections { .. }
         )
     }
@@ -109,6 +134,7 @@ impl DiffRow<'_> {
             DiffRow::Requirement { key, .. }
             | DiffRow::Scenario { key, .. }
             | DiffRow::Paragraph { key, .. }
+            | DiffRow::RemovalNoteLine { key, .. }
             | DiffRow::UnrecognizedSections { key, .. } => Some(key),
             _ => None,
         }
@@ -118,7 +144,8 @@ impl DiffRow<'_> {
         match self {
             DiffRow::Requirement { expanded, .. }
             | DiffRow::Scenario { expanded, .. }
-            | DiffRow::Paragraph { expanded, .. } => Some(*expanded),
+            | DiffRow::Paragraph { expanded, .. }
+            | DiffRow::RemovalNoteLine { expanded, .. } => Some(*expanded),
             _ => None,
         }
     }
@@ -217,6 +244,46 @@ fn push_paragraph_row<'a>(
     }
 }
 
+/// Pushes one row per non-blank line of a removed requirement's removal
+/// note, directly above the requirement's intro row, in document order. Each
+/// line is at the same indent as the intro row (1), and follows the same
+/// fits-in-one-line-else-collapsible convention `push_paragraph_row` uses for
+/// a `Piece` (see `2026-08-10-spec-model-removals/design.md`); a blank line produces no
+/// row of its own, and a note that is empty (a bare removal) produces none.
+fn push_removal_note_rows<'a>(
+    rows: &mut Vec<DiffRow<'a>>,
+    diff: &'a CapabilityDiff,
+    req: &'a RequirementDiff,
+    note: &'a str,
+    expanded: &HashSet<RowKey>,
+    width: usize,
+) {
+    const INDENT: usize = 1;
+    for (i, line) in note.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let key = RowKey::RemovalNoteLine {
+            capability: diff.capability.clone(),
+            requirement: req.name.clone(),
+            line: i,
+        };
+        if line.trim_end().chars().count() <= layout::paragraph_available(width, INDENT) {
+            rows.push(DiffRow::RemovalNoteFull {
+                text: line,
+                indent: INDENT,
+            });
+        } else {
+            rows.push(DiffRow::RemovalNoteLine {
+                text: line,
+                expanded: expanded.contains(&key),
+                key,
+                indent: INDENT,
+            });
+        }
+    }
+}
+
 /// Pushes the purpose heading and its one content row.
 fn push_purpose<'a>(
     rows: &mut Vec<DiffRow<'a>>,
@@ -254,6 +321,10 @@ fn push_requirement<'a>(
 
     if !req_expanded {
         return;
+    }
+
+    if let Operation::Removed { note } = &req.op {
+        push_removal_note_rows(rows, diff, req, note, expanded, width);
     }
 
     let intro_key = RowKey::Intro {
@@ -499,7 +570,7 @@ mod tests {
         assert!(
             !rows
                 .iter()
-                .any(|r| matches!(r, DiffRow::GroupHeading(Operation::Removed)))
+                .any(|r| matches!(r, DiffRow::GroupHeading(Operation::Removed { .. })))
         );
     }
 
@@ -795,6 +866,171 @@ mod tests {
             .find(|r| matches!(r, DiffRow::Paragraph { indent: 1, .. }))
             .expect("expected a collapsible intro row");
         assert_eq!(intro_row.expanded(), Some(true));
+    }
+
+    // --- removal-note rows (spec-model-removals) ---
+
+    fn diff_with_removal_note(note: &str) -> CapabilityDiff {
+        capability_diff(vec![requirement(
+            "Req",
+            Operation::Removed {
+                note: note.to_string(),
+            },
+            unchanged("base intro"),
+            vec![],
+        )])
+    }
+
+    fn removal_note_texts<'a>(rows: &[DiffRow<'a>]) -> Vec<&'a str> {
+        rows.iter()
+            .filter_map(|r| match r {
+                DiffRow::RemovalNoteFull { text, .. } => Some(*text),
+                DiffRow::RemovalNoteLine { text, .. } => Some(*text),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn removal_note_lines_render_above_the_intro_in_document_order() {
+        let note = "**Reason**: no longer needed.\n**Migration**: use the new thing instead.";
+        let diff = diff_with_removal_note(note);
+        let mut expanded = HashSet::new();
+        expanded.insert(req_key("cap", "Req"));
+
+        let rows = flatten(&diff, &expanded, WIDE);
+        assert_eq!(
+            removal_note_texts(&rows),
+            vec![
+                "**Reason**: no longer needed.",
+                "**Migration**: use the new thing instead.",
+            ]
+        );
+
+        // Both lines sit directly above the intro row, in the order they
+        // appear, despite sharing one markdown paragraph in the source.
+        let reason_idx = rows
+            .iter()
+            .position(|r| matches!(r, DiffRow::RemovalNoteFull { text, .. } if *text == "**Reason**: no longer needed."))
+            .expect("expected a Reason row");
+        let migration_idx = rows
+            .iter()
+            .position(|r| matches!(r, DiffRow::RemovalNoteFull { text, .. } if *text == "**Migration**: use the new thing instead."))
+            .expect("expected a Migration row");
+        let intro_idx = rows
+            .iter()
+            .position(|r| {
+                matches!(
+                    r,
+                    DiffRow::ParagraphFull { indent: 1, .. } | DiffRow::Paragraph { indent: 1, .. }
+                )
+            })
+            .expect("expected an intro row");
+        assert!(reason_idx < migration_idx);
+        assert!(migration_idx < intro_idx);
+    }
+
+    #[test]
+    fn a_blank_line_in_the_removal_note_produces_no_row() {
+        let note = "**Reason**: no longer needed.\n\n**Migration**: use the new thing instead.";
+        let diff = diff_with_removal_note(note);
+        let mut expanded = HashSet::new();
+        expanded.insert(req_key("cap", "Req"));
+
+        let rows = flatten(&diff, &expanded, WIDE);
+        assert_eq!(
+            removal_note_texts(&rows),
+            vec![
+                "**Reason**: no longer needed.",
+                "**Migration**: use the new thing instead.",
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unrecognised_removal_note_line_still_renders() {
+        let note = "Just some plain text, not Reason or Migration.";
+        let diff = diff_with_removal_note(note);
+        let mut expanded = HashSet::new();
+        expanded.insert(req_key("cap", "Req"));
+
+        let rows = flatten(&diff, &expanded, WIDE);
+        assert_eq!(removal_note_texts(&rows), vec![note]);
+    }
+
+    #[test]
+    fn a_bare_removal_produces_no_removal_note_rows() {
+        let diff = diff_with_removal_note("");
+        let mut expanded = HashSet::new();
+        expanded.insert(req_key("cap", "Req"));
+
+        let rows = flatten(&diff, &expanded, WIDE);
+        assert!(removal_note_texts(&rows).is_empty());
+        // The intro row is the first row shown after the group heading and
+        // the requirement row.
+        assert!(matches!(
+            rows[2],
+            DiffRow::ParagraphFull { indent: 1, .. } | DiffRow::Paragraph { indent: 1, .. }
+        ));
+    }
+
+    #[test]
+    fn a_long_removal_note_line_is_collapsible_and_starts_collapsed() {
+        let long_line = format!("**Reason**: {}", "a very long reason ".repeat(20));
+        let diff = diff_with_removal_note(&long_line);
+        let mut expanded = HashSet::new();
+        expanded.insert(req_key("cap", "Req"));
+
+        let rows = flatten(&diff, &expanded, 40);
+        let note_row = rows
+            .iter()
+            .find(|r| matches!(r, DiffRow::RemovalNoteLine { .. }))
+            .expect("expected a collapsible removal-note row");
+        assert_eq!(note_row.expanded(), Some(false));
+    }
+
+    #[test]
+    fn a_short_removal_note_line_renders_in_full() {
+        let diff = diff_with_removal_note("**Reason**: short.");
+        let mut expanded = HashSet::new();
+        expanded.insert(req_key("cap", "Req"));
+
+        let rows = flatten(&diff, &expanded, WIDE);
+        assert!(
+            rows.iter()
+                .any(|r| matches!(r, DiffRow::RemovalNoteFull { .. }))
+        );
+        assert!(
+            !rows
+                .iter()
+                .any(|r| matches!(r, DiffRow::RemovalNoteLine { .. }))
+        );
+    }
+
+    #[test]
+    fn removal_note_rows_are_selectable_and_carry_a_stable_key() {
+        let full = DiffRow::RemovalNoteFull {
+            text: "**Reason**: short.",
+            indent: 1,
+        };
+        assert!(full.is_selectable());
+        assert!(full.key().is_none());
+        assert!(full.expanded().is_none());
+
+        let key = RowKey::RemovalNoteLine {
+            capability: "cap".to_string(),
+            requirement: "Req".to_string(),
+            line: 0,
+        };
+        let collapsible = DiffRow::RemovalNoteLine {
+            text: "**Reason**: a very long line that will not fit",
+            expanded: false,
+            key: key.clone(),
+            indent: 1,
+        };
+        assert!(collapsible.is_selectable());
+        assert_eq!(collapsible.key(), Some(&key));
+        assert_eq!(collapsible.expanded(), Some(false));
     }
 
     // --- unrecognised sections (unrecognized-spec-sections 3.6) ---

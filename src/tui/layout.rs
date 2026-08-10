@@ -64,6 +64,16 @@ pub fn row_lines(row: &DiffRow, width: usize) -> Vec<Line<'static>> {
         return collapsed_paragraph_lines(piece, width, *indent);
     }
 
+    if let DiffRow::RemovalNoteLine {
+        text,
+        expanded: false,
+        indent,
+        ..
+    } = row
+    {
+        return collapsed_removal_note_lines(text, width, *indent);
+    }
+
     let (marker, marker_style) = gutter_marker(row);
     let indent = indent_depth(row) * INDENT_UNIT;
     let available = width.saturating_sub(GUTTER_WIDTH + indent).max(1);
@@ -142,9 +152,49 @@ fn collapsed_paragraph_lines(piece: &Piece, width: usize, indent: usize) -> Vec<
     ])]
 }
 
+/// Renders a collapsed removal-note line row: same shape as
+/// `collapsed_paragraph_lines`, but the source text is always a plain line
+/// (never a wholesale-replacement placeholder), so this is simpler — a
+/// character-exact truncated excerpt of the line, taken after stripping any
+/// leading `**Reason**`/`**Migration**` down to the bare keyword (see
+/// `strip_reason_migration_prefix`), so the excerpt never shows literal `**`
+/// characters even though it's a truncation, not the full styled line.
+fn collapsed_removal_note_lines(text: &str, width: usize, indent: usize) -> Vec<Line<'static>> {
+    let (marker, marker_style) = removal_note_marker();
+    let budget = paragraph_available(width, indent);
+    let trimmed = text.trim_end();
+    let (deasterisked, keyword) = strip_reason_migration_prefix(trimmed);
+    let excerpt = truncate_chars(&deasterisked, budget);
+
+    let content = match keyword {
+        Some(keyword) if excerpt.starts_with(keyword) => {
+            let rest = excerpt[keyword.len()..].to_string();
+            vec![
+                Span::styled(keyword.to_string(), marker_style.patch(when_then_style())),
+                Span::styled(rest, marker_style),
+            ]
+        }
+        _ => vec![Span::styled(excerpt, marker_style)],
+    };
+
+    let mut spans = vec![
+        Span::raw(" ".repeat(indent * INDENT_UNIT)),
+        Span::styled(marker, marker_style),
+        Span::raw(" "),
+        Span::raw(expand_arrow(false)),
+        Span::styled("¶", marker_style),
+        Span::raw(" "),
+    ];
+    spans.extend(content);
+    vec![Line::from(spans)]
+}
+
 fn indent_depth(row: &DiffRow) -> usize {
     match row {
-        DiffRow::ParagraphFull { indent, .. } | DiffRow::Paragraph { indent, .. } => *indent,
+        DiffRow::ParagraphFull { indent, .. }
+        | DiffRow::Paragraph { indent, .. }
+        | DiffRow::RemovalNoteFull { indent, .. }
+        | DiffRow::RemovalNoteLine { indent, .. } => *indent,
         DiffRow::GroupHeading(_)
         | DiffRow::PurposeHeading(_)
         | DiffRow::Requirement { .. }
@@ -168,7 +218,16 @@ fn gutter_marker(row: &DiffRow) -> (&'static str, Style) {
         DiffRow::Scenario { body, .. } => piece_marker(body),
         DiffRow::ParagraphFull { piece, .. } => piece_marker(piece),
         DiffRow::Paragraph { piece, .. } => piece_marker(piece),
+        DiffRow::RemovalNoteFull { .. } | DiffRow::RemovalNoteLine { .. } => removal_note_marker(),
     }
+}
+
+/// The gutter marker for a removed requirement's removal-note line: the same
+/// marker glyph and colour as a modified operation and a changed piece —
+/// distinct from both the added and the deletion styling used elsewhere in a
+/// removed requirement's rows (see `2026-08-10-spec-model-removals/design.md`).
+fn removal_note_marker() -> (&'static str, Style) {
+    ("~", modified_style())
 }
 
 /// The gutter marker for a requirement row, one per `Operation` variant.
@@ -177,7 +236,7 @@ fn requirement_marker(op: &Operation) -> (&'static str, Style) {
     match op {
         Operation::Added => ("+", style),
         Operation::Modified => ("~", style),
-        Operation::Removed => ("-", style),
+        Operation::Removed { .. } => ("-", style),
         Operation::Renamed { .. } => ("»", style),
     }
 }
@@ -191,7 +250,7 @@ pub(crate) fn operation_style(op: &Operation) -> Style {
     match op {
         Operation::Added => added_style(),
         Operation::Modified | Operation::Renamed { .. } => modified_style(),
-        Operation::Removed => removed_marker_style(),
+        Operation::Removed { .. } => removed_marker_style(),
     }
 }
 
@@ -322,6 +381,74 @@ fn content_spans(row: &DiffRow) -> Vec<Span<'static>> {
                 spans
             }
         }
+        DiffRow::RemovalNoteFull { text, .. } => {
+            let (_, marker_style) = removal_note_marker();
+            let mut spans = vec![Span::styled("¶", marker_style), Span::raw(" ")];
+            spans.extend(removal_note_line_spans(text));
+            spans
+        }
+        // `expanded: false` is intercepted earlier in `row_lines` via
+        // `collapsed_removal_note_lines`; only the expanded case reaches here.
+        DiffRow::RemovalNoteLine { text, expanded, .. } => {
+            let (_, marker_style) = removal_note_marker();
+            let mut spans = vec![
+                Span::raw(expand_arrow(*expanded)),
+                Span::styled("¶", marker_style),
+                Span::raw(" "),
+            ];
+            spans.extend(removal_note_line_spans(text));
+            spans
+        }
+    }
+}
+
+/// Builds one removal-note line's spans: a leading `**Reason**` or
+/// `**Migration**` keyword is de-asterisked and styled the same way a
+/// scenario body's `WHEN`/`THEN`/`AND` bullet keyword is (see
+/// `style_when_then`); any other line renders as-is. The whole line carries
+/// modification styling — the removal note has no base counterpart to diff
+/// against, so it is never insertion- or deletion-styled.
+fn removal_note_line_spans(text: &str) -> Vec<Span<'static>> {
+    let (_, marker_style) = removal_note_marker();
+    let (deasterisked, keyword) = strip_reason_migration_prefix(text);
+    match keyword {
+        Some(keyword) => {
+            let rest = deasterisked[keyword.len()..].to_string();
+            vec![
+                Span::styled(keyword.to_string(), marker_style.patch(when_then_style())),
+                Span::styled(rest, marker_style),
+            ]
+        }
+        None => vec![Span::styled(deasterisked, marker_style)],
+    }
+}
+
+/// Returns `"Reason"` or `"Migration"` if `text` opens with the literal
+/// markdown-bold form `**Reason**` or `**Migration**`.
+fn reason_migration_keyword(text: &str) -> Option<&'static str> {
+    for keyword in ["Reason", "Migration"] {
+        if text.starts_with(&format!("**{keyword}**")) {
+            return Some(keyword);
+        }
+    }
+    None
+}
+
+/// Strips a removal-note line's leading `**Reason**`/`**Migration**`
+/// markdown-bold wrapper down to the bare keyword, so both the fully
+/// rendered line (`removal_note_line_spans`) and its collapsed excerpt
+/// (`collapsed_removal_note_lines`) show the same de-asterisked text —
+/// keyword stripping applies in both states, unlike a collapsed intro row's
+/// excerpt, which has no keyword convention of its own to strip. Returns the
+/// de-asterisked text and, if a keyword was found, the keyword itself so a
+/// caller can style just that prefix.
+fn strip_reason_migration_prefix(text: &str) -> (String, Option<&'static str>) {
+    match reason_migration_keyword(text) {
+        Some(keyword) => {
+            let prefix_len = keyword.len() + 4; // "**" + keyword + "**"
+            (format!("{keyword}{}", &text[prefix_len..]), Some(keyword))
+        }
+        None => (text.to_string(), None),
     }
 }
 
@@ -333,7 +460,7 @@ pub(crate) fn heading_text(op: &Operation) -> &'static str {
     match op {
         Operation::Added => "Added",
         Operation::Modified => "Modified",
-        Operation::Removed => "Removed",
+        Operation::Removed { .. } => "Removed",
         Operation::Renamed { .. } => "Renamed",
     }
 }
@@ -447,7 +574,13 @@ mod tests {
     fn each_operation_gets_its_expected_marker() {
         assert_eq!(requirement_marker(&Operation::Added).0, "+");
         assert_eq!(requirement_marker(&Operation::Modified).0, "~");
-        assert_eq!(requirement_marker(&Operation::Removed).0, "-");
+        assert_eq!(
+            requirement_marker(&Operation::Removed {
+                note: String::new()
+            })
+            .0,
+            "-"
+        );
         assert_eq!(
             requirement_marker(&Operation::Renamed {
                 from: "x".to_string()
@@ -459,7 +592,10 @@ mod tests {
         let markers = [
             requirement_marker(&Operation::Added).0,
             requirement_marker(&Operation::Modified).0,
-            requirement_marker(&Operation::Removed).0,
+            requirement_marker(&Operation::Removed {
+                note: String::new(),
+            })
+            .0,
             requirement_marker(&Operation::Renamed {
                 from: "x".to_string(),
             })
@@ -1200,5 +1336,182 @@ mod tests {
         let excerpt = lines[0].spans.last().unwrap();
         assert!(excerpt.content.ends_with('…'));
         assert!(excerpt.style.add_modifier.contains(Modifier::DIM));
+    }
+
+    // --- removal-note line rendering (spec-model-removals) ---
+
+    fn removal_note_key() -> super::super::diff_row::RowKey {
+        super::super::diff_row::RowKey::RemovalNoteLine {
+            capability: "cap".to_string(),
+            requirement: "Req".to_string(),
+            line: 0,
+        }
+    }
+
+    #[test]
+    fn a_reason_line_is_deasterisked_and_styled_bold() {
+        let row = DiffRow::RemovalNoteFull {
+            text: "**Reason**: no longer needed.",
+            indent: 1,
+        };
+        let spans = content_spans(&row);
+
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "¶ Reason: no longer needed.");
+        assert!(!text.contains('*'));
+
+        let keyword = spans
+            .iter()
+            .find(|s| s.content.as_ref() == "Reason")
+            .expect("expected a span exactly matching Reason");
+        assert!(keyword.style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn a_migration_line_is_deasterisked_and_styled_bold() {
+        let row = DiffRow::RemovalNoteFull {
+            text: "**Migration**: use the new thing instead.",
+            indent: 1,
+        };
+        let spans = content_spans(&row);
+
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "¶ Migration: use the new thing instead.");
+        assert!(!text.contains('*'));
+
+        let keyword = spans
+            .iter()
+            .find(|s| s.content.as_ref() == "Migration")
+            .expect("expected a span exactly matching Migration");
+        assert!(keyword.style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn an_unrecognised_removal_note_line_renders_without_keyword_stripping() {
+        let row = DiffRow::RemovalNoteFull {
+            text: "Just plain text, not Reason or Migration.",
+            indent: 1,
+        };
+        let spans = content_spans(&row);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "¶ Just plain text, not Reason or Migration.");
+        assert!(
+            !spans
+                .iter()
+                .any(|s| s.style.add_modifier.contains(Modifier::BOLD))
+        );
+    }
+
+    #[test]
+    fn removal_note_rows_use_modification_styling_distinct_from_added_and_deleted() {
+        let (marker, style) = removal_note_marker();
+        assert_eq!(marker, "~");
+        assert_eq!(style, modified_style());
+        assert_ne!(style, added_style());
+        assert_ne!(style, removed_marker_style());
+    }
+
+    #[test]
+    fn a_short_removal_note_line_renders_in_full_with_no_ellipsis_or_triangle() {
+        let row = DiffRow::RemovalNoteFull {
+            text: "**Reason**: short.",
+            indent: 1,
+        };
+        let lines = row_lines(&row, 80);
+        let text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(text.contains("Reason: short."));
+        assert!(!text.contains('…'));
+        assert!(!text.contains('▸'));
+        assert!(!text.contains('▾'));
+    }
+
+    #[test]
+    fn a_long_removal_note_line_collapsed_shows_a_truncated_excerpt_with_a_triangle() {
+        let long_line = format!("**Reason**: {}", "a very long reason ".repeat(20));
+        let row = DiffRow::RemovalNoteLine {
+            text: &long_line,
+            expanded: false,
+            key: removal_note_key(),
+            indent: 1,
+        };
+        let width = 30;
+        let lines = row_lines(&row, width);
+        assert_eq!(lines.len(), 1);
+        let text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains('▸'));
+        assert!(text.ends_with('…'));
+
+        // The excerpt is a character-exact truncation of the de-asterisked
+        // text (`Reason: ...`, not `**Reason**: ...`), so its length matches
+        // the same budget the intro row's own excerpt is measured against.
+        let budget = paragraph_available(width, 1);
+        let pillcrow_idx = lines[0]
+            .spans
+            .iter()
+            .position(|s| s.content.as_ref() == "¶")
+            .expect("expected a pillcrow span");
+        let excerpt: String = lines[0].spans[pillcrow_idx + 2..]
+            .iter()
+            .flat_map(|s| s.content.chars())
+            .collect();
+        assert_eq!(excerpt.chars().count(), budget);
+        assert!(excerpt.starts_with("Reason:"));
+    }
+
+    #[test]
+    fn a_collapsed_removal_note_line_de_asterisks_the_reason_keyword_even_when_truncated() {
+        let long_line = format!("**Reason**: {}", "a very long reason ".repeat(20));
+        let row = DiffRow::RemovalNoteLine {
+            text: &long_line,
+            expanded: false,
+            key: removal_note_key(),
+            indent: 1,
+        };
+        let lines = row_lines(&row, 30);
+        let text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            !text.contains('*'),
+            "expected no literal ** in the collapsed excerpt, got {text:?}"
+        );
+        assert!(text.contains("Reason:"));
+
+        let keyword = lines[0]
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "Reason")
+            .expect("expected a span exactly matching Reason");
+        assert!(keyword.style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn expanding_a_removal_note_line_reveals_the_full_wrapped_line() {
+        let long_line = format!("**Reason**: {}", "a very long reason ".repeat(20));
+        let row = DiffRow::RemovalNoteLine {
+            text: &long_line,
+            expanded: true,
+            key: removal_note_key(),
+            indent: 1,
+        };
+        let lines = row_lines(&row, 30);
+        assert!(
+            lines.len() > 1,
+            "expected the line to wrap onto several lines"
+        );
+        let text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(text.contains("Reason:"));
+        assert!(!text.contains('*'));
+        assert!(text.contains('▾'));
     }
 }

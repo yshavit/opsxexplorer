@@ -159,18 +159,7 @@ fn parse_delta_entries_section(
     for elem in body {
         match elem {
             MdElem::Section(s) if s.depth == 3 => {
-                // A removed entry is heading-only: its name is the join key, and
-                // any body content (there normally isn't any) is disregarded —
-                // the requirement's content is recovered from the base spec.
-                let requirement = if op == DeltaOp::Removed {
-                    Requirement {
-                        name: heading_name(&s.title, "Requirement: "),
-                        intro: String::new(),
-                        scenarios: Vec::new(),
-                    }
-                } else {
-                    parse_requirement(ctx, s)
-                };
+                let requirement = parse_requirement(ctx, s);
                 out.push(DeltaEntry { op, requirement });
             }
             MdElem::Section(s) if s.depth == 4 => {
@@ -534,6 +523,31 @@ mod tests {
         assert_eq!(delta.entries[0].op, DeltaOp::Removed);
         assert_eq!(delta.entries[0].requirement.name, "Some Old Thing");
         assert_eq!(delta.entries[0].requirement.intro, "");
+        assert!(delta.entries[0].requirement.scenarios.is_empty());
+    }
+
+    #[test]
+    fn removed_entry_with_reason_and_migration_body_parses_into_intro() {
+        let text = "## REMOVED Requirements\n\n\
+            ### Requirement: Some Old Thing\n\
+            **Reason**: no longer needed.\n\
+            **Migration**: use the new thing instead.\n";
+        let delta = parse_delta(Path::new("synthetic"), text).unwrap();
+        assert_eq!(delta.entries.len(), 1);
+        assert_eq!(delta.entries[0].op, DeltaOp::Removed);
+        assert_eq!(delta.entries[0].requirement.name, "Some Old Thing");
+        assert!(
+            delta.entries[0]
+                .requirement
+                .intro
+                .contains("**Reason**: no longer needed.")
+        );
+        assert!(
+            delta.entries[0]
+                .requirement
+                .intro
+                .contains("**Migration**: use the new thing instead.")
+        );
         assert!(delta.entries[0].requirement.scenarios.is_empty());
     }
 

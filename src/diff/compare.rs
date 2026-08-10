@@ -626,7 +626,12 @@ mod tests {
         let result = diff("cap", &pair);
         let req = only_requirement(&result);
 
-        assert_eq!(req.op, Operation::Removed);
+        assert_eq!(
+            req.op,
+            Operation::Removed {
+                note: String::new()
+            }
+        );
         let names: Vec<&str> = req.scenarios.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["A", "B", "C"]);
         assert!(
