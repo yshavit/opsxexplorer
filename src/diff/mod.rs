@@ -633,17 +633,19 @@ mod tests {
             other => panic!("expected the intro to be Changed, got {other:?}"),
         }
 
+        // Added scenarios (delta order) are reported ahead of the unchanged
+        // ones (base order), since added outranks unchanged.
         let scenario_names: Vec<&str> =
             modified.scenarios.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(
             scenario_names,
             vec![
-                "archived row collapsed by default",
-                "expanding reveals archived changes",
-                "collapsing hides archived changes",
                 "collapsed row is underlined",
                 "expanded row is not underlined",
                 "underline persists under horizontal scroll",
+                "archived row collapsed by default",
+                "expanding reveals archived changes",
+                "collapsing hides archived changes",
             ]
         );
         for name in [
