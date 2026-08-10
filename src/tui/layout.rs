@@ -225,7 +225,7 @@ fn gutter_marker(row: &DiffRow) -> (&'static str, Style) {
 /// The gutter marker for a removed requirement's removal-note line: the same
 /// marker glyph and colour as a modified operation and a changed piece —
 /// distinct from both the added and the deletion styling used elsewhere in a
-/// removed requirement's rows (see `spec-model-removals/design.md`).
+/// removed requirement's rows (see `2026-08-10-spec-model-removals/design.md`).
 fn removal_note_marker() -> (&'static str, Style) {
     ("~", modified_style())
 }

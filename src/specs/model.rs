@@ -42,7 +42,7 @@ pub enum DeltaOp {
 /// added or modified entry's body would be. Its scenarios and intro have no
 /// bearing on the requirement's actual (deleted) content, which is instead
 /// recovered from the base spec. See `2026-08-08-spec-model/design.md` and
-/// `spec-model-removals/design.md`.
+/// `2026-08-10-spec-model-removals/design.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeltaEntry {
     pub op: DeltaOp,

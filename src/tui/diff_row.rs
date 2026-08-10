@@ -68,7 +68,7 @@ pub enum DiffRow<'a> {
     },
     /// One line of a removed requirement's removal note, shown in full: no
     /// collapse affordance, but still selectable, mirroring `ParagraphFull`
-    /// (see `spec-model-removals/design.md`).
+    /// (see `2026-08-10-spec-model-removals/design.md`).
     RemovalNoteFull {
         text: &'a str,
         indent: usize,
@@ -248,7 +248,7 @@ fn push_paragraph_row<'a>(
 /// note, directly above the requirement's intro row, in document order. Each
 /// line is at the same indent as the intro row (1), and follows the same
 /// fits-in-one-line-else-collapsible convention `push_paragraph_row` uses for
-/// a `Piece` (see `spec-model-removals/design.md`); a blank line produces no
+/// a `Piece` (see `2026-08-10-spec-model-removals/design.md`); a blank line produces no
 /// row of its own, and a note that is empty (a bare removal) produces none.
 fn push_removal_note_rows<'a>(
     rows: &mut Vec<DiffRow<'a>>,
