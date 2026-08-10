@@ -20,15 +20,18 @@ pub struct ChangeViews<'a> {
 }
 
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::path::Path;
-
-use git2::Repository;
 
 use crate::vfs::{Fs, FsError, Workspace};
 
 pub struct Changes {
     vfs: Workspace,
-    repo: Option<Repository>,
+    /// The introducing-commit resolution for every archived change, computed
+    /// once at discovery. `None` when discovery found no git repository;
+    /// distinct from an archived change being absent from an inner map,
+    /// which means that change's introducing commit could not be resolved.
+    archived_history: Option<HashMap<Change, history::Resolution>>,
     pub active: Vec<Change>,
     pub archived: Vec<Change>,
 }
@@ -36,13 +39,19 @@ pub struct Changes {
 impl Changes {
     pub fn discover(start: &Path) -> Result<Changes, FsError> {
         let vfs = Workspace::open(start)?;
-        let repo = Repository::discover(start).ok();
         let current = vfs.current();
         let active = discovery::discover_active(&current)?;
         let mut archived = discovery::discover_archived(&current)?;
+        let archived_history = vfs.repo().map(|r| history::resolve_all(r, &archived));
         archived.sort_by(|a, b| {
-            let a_introduced_at = repo.as_ref().and_then(|r| history::first_commit_time(r, a));
-            let b_introduced_at = repo.as_ref().and_then(|r| history::first_commit_time(r, b));
+            let a_introduced_at = archived_history
+                .as_ref()
+                .and_then(|m| m.get(a))
+                .map(|r| r.time);
+            let b_introduced_at = archived_history
+                .as_ref()
+                .and_then(|m| m.get(b))
+                .map(|r| r.time);
             b.archive_date()
                 .cmp(&a.archive_date())
                 .then_with(|| cmp_introduced_at(a_introduced_at, b_introduced_at))
@@ -50,7 +59,7 @@ impl Changes {
         });
         Ok(Changes {
             vfs,
-            repo,
+            archived_history,
             active,
             archived,
         })
@@ -58,8 +67,11 @@ impl Changes {
 
     pub fn resolve(&self, change: &Change) -> Result<ChangeView, ChangesError> {
         let diff_base = if change.is_archived() {
-            let repo = self.repo.as_ref().ok_or(FsError::NotAGitRepo)?;
-            DiffBase::At(history::resolve_archive_base(repo, change)?)
+            let history = self.archived_history.as_ref().ok_or(FsError::NotAGitRepo)?;
+            match history.get(change).and_then(|r| r.diff_base) {
+                Some(base) => DiffBase::At(base),
+                None => return Err(ChangesError::ArchiveHistoryNotFound(change.clone())),
+            }
         } else {
             DiffBase::Current
         };
@@ -711,5 +723,157 @@ mod tests {
                 .archived
                 .contains(&Change("archive/2026-01-01-uncommitted".to_string()))
         );
+    }
+
+    #[test]
+    fn archived_change_diff_base_survives_commits_made_after_discovery() {
+        let dir = TempDir::new("snapshot-later-commits");
+        let repo = Repository::init(dir.path()).unwrap();
+
+        write_file(dir.path(), "openspec/specs/cap/spec.md", "v1");
+        stage_and_commit(&repo, "spec v1", &["openspec/specs/cap/spec.md"]);
+        write_file(
+            dir.path(),
+            "openspec/changes/archive/2026-01-01-old-thing/proposal.md",
+            "x",
+        );
+        stage_and_commit(
+            &repo,
+            "archive old-thing",
+            &["openspec/changes/archive/2026-01-01-old-thing/proposal.md"],
+        );
+
+        let changes = Changes::discover(dir.path()).unwrap();
+        let change = changes.archived[0].clone();
+        let before = changes.resolve(&change).unwrap();
+
+        // Commits made after discovery - including one touching the spec of
+        // record - must not move the already-resolved diff base.
+        write_file(
+            dir.path(),
+            "openspec/specs/cap/spec.md",
+            "v2-after-discovery",
+        );
+        stage_and_commit(
+            &repo,
+            "spec v2, after discovery",
+            &["openspec/specs/cap/spec.md"],
+        );
+
+        let after = changes.resolve(&change).unwrap();
+        assert_eq!(before.diff_base, after.diff_base);
+    }
+
+    #[test]
+    fn archived_change_uncommitted_at_discovery_stays_unresolvable_once_committed() {
+        let dir = TempDir::new("snapshot-uncommitted-then-committed");
+        let repo = Repository::init(dir.path()).unwrap();
+
+        write_file(dir.path(), "openspec/specs/cap/spec.md", "v1");
+        stage_and_commit(&repo, "spec v1", &["openspec/specs/cap/spec.md"]);
+
+        // Present in the working tree but not committed at discovery time.
+        write_file(
+            dir.path(),
+            "openspec/changes/archive/2026-01-01-uncommitted/proposal.md",
+            "x",
+        );
+
+        let changes = Changes::discover(dir.path()).unwrap();
+        let change = Change("archive/2026-01-01-uncommitted".to_string());
+        assert!(changes.archived.contains(&change));
+        assert!(changes.resolve(&change).is_err());
+
+        // Committing it mid-session must not retroactively resolve it: the
+        // discovery result is a snapshot.
+        stage_and_commit(
+            &repo,
+            "commit the previously-uncommitted change",
+            &["openspec/changes/archive/2026-01-01-uncommitted/proposal.md"],
+        );
+
+        assert!(changes.archived.contains(&change));
+        assert!(matches!(
+            changes.resolve(&change),
+            Err(ChangesError::ArchiveHistoryNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn fresh_discover_resolves_against_newer_history() {
+        let dir = TempDir::new("snapshot-fresh-discover");
+        let repo = Repository::init(dir.path()).unwrap();
+
+        write_file(dir.path(), "openspec/specs/cap/spec.md", "v1");
+        stage_and_commit(&repo, "spec v1", &["openspec/specs/cap/spec.md"]);
+        write_file(
+            dir.path(),
+            "openspec/changes/archive/2026-01-01-uncommitted/proposal.md",
+            "x",
+        );
+
+        let stale = Changes::discover(dir.path()).unwrap();
+        let change = Change("archive/2026-01-01-uncommitted".to_string());
+        assert!(stale.resolve(&change).is_err());
+
+        stage_and_commit(
+            &repo,
+            "commit the change",
+            &["openspec/changes/archive/2026-01-01-uncommitted/proposal.md"],
+        );
+
+        let fresh = Changes::discover(dir.path()).unwrap();
+        assert!(fresh.resolve(&change).is_ok());
+    }
+
+    #[test]
+    fn archived_change_introduced_by_root_commit_sorts_by_it_and_errors_on_resolve() {
+        let dir = TempDir::new("root-commit-introduction");
+        let repo = Repository::init(dir.path()).unwrap();
+
+        // The root commit both creates the repo and introduces the archived
+        // change - there is no earlier commit to use as a diff base.
+        write_file(
+            dir.path(),
+            "openspec/changes/archive/2026-01-01-root-thing/proposal.md",
+            "x",
+        );
+        stage_and_commit_at(
+            &repo,
+            "root commit introduces change",
+            &["openspec/changes/archive/2026-01-01-root-thing/proposal.md"],
+            1_000_000,
+        );
+
+        write_file(
+            dir.path(),
+            "openspec/changes/archive/2026-01-01-later-thing/proposal.md",
+            "y",
+        );
+        stage_and_commit_at(
+            &repo,
+            "archive later-thing",
+            &["openspec/changes/archive/2026-01-01-later-thing/proposal.md"],
+            1_000_100,
+        );
+
+        let changes = Changes::discover(dir.path()).unwrap();
+
+        // Same archive date, so the tiebreak is introducing-commit
+        // timestamp, most recent first: later-thing (root-thing has no
+        // parent, so its diff base cannot be resolved).
+        assert_eq!(
+            changes.archived,
+            vec![
+                Change("archive/2026-01-01-later-thing".to_string()),
+                Change("archive/2026-01-01-root-thing".to_string()),
+            ]
+        );
+
+        let root_change = Change("archive/2026-01-01-root-thing".to_string());
+        assert!(matches!(
+            changes.resolve(&root_change),
+            Err(ChangesError::ArchiveHistoryNotFound(_))
+        ));
     }
 }
