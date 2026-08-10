@@ -85,12 +85,35 @@ fn intro_piece(base: &str, delta: &str) -> Piece {
     }
 }
 
+/// A scenario's place in the reported order: category first (added, then
+/// modified, then unmentioned, then unchanged), then a tie-break index within
+/// that category (see `compare_requirement`).
+///
+/// `Piece::Deleted` never reaches this function — `compare_requirement` only
+/// ever constructs `Added`, `Changed`, `Replaced`, `Unmentioned` or
+/// `Unchanged` pieces; `Deleted` is produced solely by the separate removal
+/// path in `diff::diff`, which recovers a whole removed requirement's
+/// scenarios from the spec of record and does not call this function.
+fn category_rank(piece: &Piece) -> u8 {
+    match piece {
+        Piece::Added { .. } => 0,
+        Piece::Changed { .. } | Piece::Replaced { .. } => 1,
+        Piece::Unmentioned { .. } => 2,
+        Piece::Unchanged { .. } => 3,
+        Piece::Deleted { .. } => {
+            unreachable!("compare_requirement never produces a Deleted piece")
+        }
+    }
+}
+
 /// Compares a base requirement's content against a delta requirement's,
 /// applying the uniform rule to the intro and matching scenarios by name.
-/// Base scenarios are emitted first, in base order (matched or
-/// `Unmentioned`), followed by delta-only scenarios in delta order.
-/// Duplicate names resolve first-wins on both sides (see
-/// `2026-08-08-spec-diff/design.md`).
+/// Scenarios are reported grouped by category — added, then modified
+/// (changed or replaced), then unmentioned, then unchanged — so the pieces
+/// most relevant to a reviewer come first. Within a category, ties are
+/// broken by the delta's order for added scenarios and by the base's order
+/// for every other category. Duplicate names resolve first-wins on both
+/// sides (see `2026-08-08-spec-diff/design.md`).
 pub(crate) fn compare_requirement(
     base: &Requirement,
     delta: &Requirement,
@@ -104,10 +127,10 @@ pub(crate) fn compare_requirement(
             .or_insert(scenario);
     }
 
-    let mut scenarios = Vec::new();
+    let mut scenarios: Vec<(ScenarioDiff, (u8, usize))> = Vec::new();
     let mut seen: HashSet<&str> = HashSet::new();
 
-    for base_scenario in &base.scenarios {
+    for (index, base_scenario) in base.scenarios.iter().enumerate() {
         if !seen.insert(base_scenario.name.as_str()) {
             continue;
         }
@@ -117,25 +140,36 @@ pub(crate) fn compare_requirement(
                 base: base_scenario.body.clone(),
             },
         };
-        scenarios.push(ScenarioDiff {
-            name: base_scenario.name.clone(),
-            body,
-        });
+        let key = (category_rank(&body), index);
+        scenarios.push((
+            ScenarioDiff {
+                name: base_scenario.name.clone(),
+                body,
+            },
+            key,
+        ));
     }
 
-    for delta_scenario in &delta.scenarios {
+    for (index, delta_scenario) in delta.scenarios.iter().enumerate() {
         if !seen.insert(delta_scenario.name.as_str()) {
             continue;
         }
-        scenarios.push(ScenarioDiff {
-            name: delta_scenario.name.clone(),
-            body: Piece::Added {
-                delta: delta_scenario.body.clone(),
+        let body = Piece::Added {
+            delta: delta_scenario.body.clone(),
+        };
+        let key = (category_rank(&body), index);
+        scenarios.push((
+            ScenarioDiff {
+                name: delta_scenario.name.clone(),
+                body,
             },
-        });
+            key,
+        ));
     }
 
-    (intro, scenarios)
+    scenarios.sort_by_key(|(_, key)| *key);
+
+    (intro, scenarios.into_iter().map(|(s, _)| s).collect())
 }
 
 #[cfg(test)]
@@ -298,16 +332,17 @@ mod tests {
         let result = diff("cap", &pair);
         let req = only_requirement(&result);
         assert_eq!(req.scenarios.len(), 4);
-        assert!(matches!(req.scenarios[0].body, Piece::Unchanged { .. }));
-        assert!(matches!(req.scenarios[1].body, Piece::Unchanged { .. }));
-        assert!(matches!(req.scenarios[2].body, Piece::Unchanged { .. }));
-        assert_eq!(req.scenarios[3].name, "D");
+        // Unmentioned outranks unchanged, so D is reported first.
+        assert_eq!(req.scenarios[0].name, "D");
         assert_eq!(
-            req.scenarios[3].body,
+            req.scenarios[0].body,
             Piece::Unmentioned {
                 base: "- **WHEN** d\n- **THEN** d2".to_string()
             }
         );
+        assert!(matches!(req.scenarios[1].body, Piece::Unchanged { .. }));
+        assert!(matches!(req.scenarios[2].body, Piece::Unchanged { .. }));
+        assert!(matches!(req.scenarios[3].body, Piece::Unchanged { .. }));
         assert!(
             !req.scenarios
                 .iter()
@@ -389,5 +424,215 @@ mod tests {
             }
             other => panic!("expected Replaced, got {other:?}"),
         }
+    }
+
+    // --- scenarios-ordering: category-based scenario order ---
+
+    #[test]
+    fn scenarios_are_grouped_by_category() {
+        let base_md = "## Requirements\n\n\
+            ### Requirement: Foo\n\
+            Intro.\n\n\
+            #### Scenario: A\n\
+            - **WHEN** a\n\
+            - **THEN** a2\n\n\
+            #### Scenario: B\n\
+            - **WHEN** b\n\
+            - **THEN** b2\n\n\
+            #### Scenario: C\n\
+            - **WHEN** c\n\
+            - **THEN** c2\n";
+        // A is restated unchanged, B is restated with an edit, C is omitted
+        // (unmentioned), and D is new (added).
+        let delta_md = "## MODIFIED Requirements\n\n\
+            ### Requirement: Foo\n\
+            Intro.\n\n\
+            #### Scenario: A\n\
+            - **WHEN** a\n\
+            - **THEN** a2\n\n\
+            #### Scenario: B\n\
+            - **WHEN** b\n\
+            - **THEN** b2 with a small edit appended\n\n\
+            #### Scenario: D\n\
+            - **WHEN** d\n\
+            - **THEN** d2\n";
+        let pair = pair_from_markdown(delta_md, Some(base_md));
+        let result = diff("cap", &pair);
+        let req = only_requirement(&result);
+
+        let names: Vec<&str> = req.scenarios.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["D", "B", "C", "A"]);
+        assert!(matches!(req.scenarios[0].body, Piece::Added { .. }));
+        assert!(matches!(req.scenarios[1].body, Piece::Changed { .. }));
+        assert!(matches!(req.scenarios[2].body, Piece::Unmentioned { .. }));
+        assert!(matches!(req.scenarios[3].body, Piece::Unchanged { .. }));
+    }
+
+    #[test]
+    fn added_scenarios_within_their_category_follow_the_deltas_order() {
+        let base_md = "## Requirements\n\n\
+            ### Requirement: Foo\n\
+            Intro.\n\n\
+            #### Scenario: Keep\n\
+            - **WHEN** k\n\
+            - **THEN** k2\n";
+        // Delta lists Keep first, then Zeta, then Alpha — Zeta and Alpha are
+        // both new, in that order, even though alphabetically Alpha comes
+        // first and Keep sits ahead of both in the base.
+        let delta_md = "## MODIFIED Requirements\n\n\
+            ### Requirement: Foo\n\
+            Intro.\n\n\
+            #### Scenario: Keep\n\
+            - **WHEN** k\n\
+            - **THEN** k2\n\n\
+            #### Scenario: Zeta\n\
+            - **WHEN** z\n\
+            - **THEN** z2\n\n\
+            #### Scenario: Alpha\n\
+            - **WHEN** al\n\
+            - **THEN** al2\n";
+        let pair = pair_from_markdown(delta_md, Some(base_md));
+        let result = diff("cap", &pair);
+        let req = only_requirement(&result);
+
+        let names: Vec<&str> = req.scenarios.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["Zeta", "Alpha", "Keep"]);
+    }
+
+    #[test]
+    fn modified_scenarios_within_their_category_follow_the_base_order_not_the_deltas() {
+        let base_md = "## Requirements\n\n\
+            ### Requirement: Foo\n\
+            Intro.\n\n\
+            #### Scenario: X\n\
+            - **WHEN** x\n\
+            - **THEN** x2\n\n\
+            #### Scenario: Y\n\
+            - **WHEN** y\n\
+            - **THEN** y2\n";
+        // Delta restates both with edits, listing Y before X — the reverse
+        // of the base's order.
+        let delta_md = "## MODIFIED Requirements\n\n\
+            ### Requirement: Foo\n\
+            Intro.\n\n\
+            #### Scenario: Y\n\
+            - **WHEN** y\n\
+            - **THEN** y2 with an edit appended\n\n\
+            #### Scenario: X\n\
+            - **WHEN** x\n\
+            - **THEN** x2 with an edit appended\n";
+        let pair = pair_from_markdown(delta_md, Some(base_md));
+        let result = diff("cap", &pair);
+        let req = only_requirement(&result);
+
+        let names: Vec<&str> = req.scenarios.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["X", "Y"]);
+        assert!(
+            req.scenarios
+                .iter()
+                .all(|s| matches!(s.body, Piece::Changed { .. }))
+        );
+    }
+
+    #[test]
+    fn unchanged_scenarios_within_their_category_follow_the_base_order_not_the_deltas() {
+        let base_md = "## Requirements\n\n\
+            ### Requirement: Foo\n\
+            Intro.\n\n\
+            #### Scenario: A\n\
+            - **WHEN** a\n\
+            - **THEN** a2\n\n\
+            #### Scenario: B\n\
+            - **WHEN** b\n\
+            - **THEN** b2\n\n\
+            #### Scenario: C\n\
+            - **WHEN** c\n\
+            - **THEN** c2\n";
+        // Delta restates all three unchanged, in a different order than the
+        // base, and also adds Z — proving the unchanged trio still sorts by
+        // base order rather than by this delta order.
+        let delta_md = "## MODIFIED Requirements\n\n\
+            ### Requirement: Foo\n\
+            Intro.\n\n\
+            #### Scenario: Z\n\
+            - **WHEN** z\n\
+            - **THEN** z2\n\n\
+            #### Scenario: C\n\
+            - **WHEN** c\n\
+            - **THEN** c2\n\n\
+            #### Scenario: A\n\
+            - **WHEN** a\n\
+            - **THEN** a2\n\n\
+            #### Scenario: B\n\
+            - **WHEN** b\n\
+            - **THEN** b2\n";
+        let pair = pair_from_markdown(delta_md, Some(base_md));
+        let result = diff("cap", &pair);
+        let req = only_requirement(&result);
+
+        let names: Vec<&str> = req.scenarios.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["Z", "A", "B", "C"]);
+    }
+
+    #[test]
+    fn repeated_comparison_of_a_modified_entry_is_stable() {
+        let base_md = "## Requirements\n\n\
+            ### Requirement: Foo\n\
+            Intro.\n\n\
+            #### Scenario: A\n\
+            - **WHEN** a\n\
+            - **THEN** a2\n\n\
+            #### Scenario: B\n\
+            - **WHEN** b\n\
+            - **THEN** b2\n";
+        let delta_md = "## MODIFIED Requirements\n\n\
+            ### Requirement: Foo\n\
+            Intro.\n\n\
+            #### Scenario: B\n\
+            - **WHEN** b\n\
+            - **THEN** b2 with an edit appended\n\n\
+            #### Scenario: A\n\
+            - **WHEN** a\n\
+            - **THEN** a2\n\n\
+            #### Scenario: C\n\
+            - **WHEN** c\n\
+            - **THEN** c2\n";
+        let pair = pair_from_markdown(delta_md, Some(base_md));
+        let first = diff("cap", &pair);
+        let second = diff("cap", &pair);
+        assert_eq!(
+            only_requirement(&first).scenarios,
+            only_requirement(&second).scenarios
+        );
+    }
+
+    #[test]
+    fn removed_requirements_scenarios_stay_in_the_spec_of_records_order() {
+        let base_md = "## Requirements\n\n\
+            ### Requirement: Foo\n\
+            Intro.\n\n\
+            #### Scenario: A\n\
+            - **WHEN** a\n\
+            - **THEN** a2\n\n\
+            #### Scenario: B\n\
+            - **WHEN** b\n\
+            - **THEN** b2\n\n\
+            #### Scenario: C\n\
+            - **WHEN** c\n\
+            - **THEN** c2\n";
+        let delta_md = "## REMOVED Requirements\n\n\
+            ### Requirement: Foo\n";
+        let pair = pair_from_markdown(delta_md, Some(base_md));
+        let result = diff("cap", &pair);
+        let req = only_requirement(&result);
+
+        assert_eq!(req.op, Operation::Removed);
+        let names: Vec<&str> = req.scenarios.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["A", "B", "C"]);
+        assert!(
+            req.scenarios
+                .iter()
+                .all(|s| matches!(s.body, Piece::Deleted { .. }))
+        );
     }
 }
