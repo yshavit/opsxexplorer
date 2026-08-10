@@ -155,25 +155,38 @@ fn collapsed_paragraph_lines(piece: &Piece, width: usize, indent: usize) -> Vec<
 /// Renders a collapsed removal-note line row: same shape as
 /// `collapsed_paragraph_lines`, but the source text is always a plain line
 /// (never a wholesale-replacement placeholder), so this is simpler — a
-/// character-exact truncated excerpt of the raw line, unstyled beyond the
-/// row's uniform modification colour (no `Reason`/`Migration` keyword
-/// stripping while collapsed, matching how a collapsed intro's excerpt shows
-/// no diff highlighting either).
+/// character-exact truncated excerpt of the line, taken after stripping any
+/// leading `**Reason**`/`**Migration**` down to the bare keyword (see
+/// `strip_reason_migration_prefix`), so the excerpt never shows literal `**`
+/// characters even though it's a truncation, not the full styled line.
 fn collapsed_removal_note_lines(text: &str, width: usize, indent: usize) -> Vec<Line<'static>> {
     let (marker, marker_style) = removal_note_marker();
     let budget = paragraph_available(width, indent);
     let trimmed = text.trim_end();
-    let content = Span::styled(truncate_chars(trimmed, budget), marker_style);
+    let (deasterisked, keyword) = strip_reason_migration_prefix(trimmed);
+    let excerpt = truncate_chars(&deasterisked, budget);
 
-    vec![Line::from(vec![
+    let content = match keyword {
+        Some(keyword) if excerpt.starts_with(keyword) => {
+            let rest = excerpt[keyword.len()..].to_string();
+            vec![
+                Span::styled(keyword.to_string(), marker_style.patch(when_then_style())),
+                Span::styled(rest, marker_style),
+            ]
+        }
+        _ => vec![Span::styled(excerpt, marker_style)],
+    };
+
+    let mut spans = vec![
         Span::raw(" ".repeat(indent * INDENT_UNIT)),
         Span::styled(marker, marker_style),
         Span::raw(" "),
         Span::raw(expand_arrow(false)),
         Span::styled("¶", marker_style),
         Span::raw(" "),
-        content,
-    ])]
+    ];
+    spans.extend(content);
+    vec![Line::from(spans)]
 }
 
 fn indent_depth(row: &DiffRow) -> usize {
@@ -397,16 +410,16 @@ fn content_spans(row: &DiffRow) -> Vec<Span<'static>> {
 /// against, so it is never insertion- or deletion-styled.
 fn removal_note_line_spans(text: &str) -> Vec<Span<'static>> {
     let (_, marker_style) = removal_note_marker();
-    match reason_migration_keyword(text) {
+    let (deasterisked, keyword) = strip_reason_migration_prefix(text);
+    match keyword {
         Some(keyword) => {
-            let prefix_len = keyword.len() + 4; // "**" + keyword + "**"
-            let rest = &text[prefix_len..];
+            let rest = deasterisked[keyword.len()..].to_string();
             vec![
                 Span::styled(keyword.to_string(), marker_style.patch(when_then_style())),
-                Span::styled(rest.to_string(), marker_style),
+                Span::styled(rest, marker_style),
             ]
         }
-        None => vec![Span::styled(text.to_string(), marker_style)],
+        None => vec![Span::styled(deasterisked, marker_style)],
     }
 }
 
@@ -419,6 +432,24 @@ fn reason_migration_keyword(text: &str) -> Option<&'static str> {
         }
     }
     None
+}
+
+/// Strips a removal-note line's leading `**Reason**`/`**Migration**`
+/// markdown-bold wrapper down to the bare keyword, so both the fully
+/// rendered line (`removal_note_line_spans`) and its collapsed excerpt
+/// (`collapsed_removal_note_lines`) show the same de-asterisked text —
+/// keyword stripping applies in both states, unlike a collapsed intro row's
+/// excerpt, which has no keyword convention of its own to strip. Returns the
+/// de-asterisked text and, if a keyword was found, the keyword itself so a
+/// caller can style just that prefix.
+fn strip_reason_migration_prefix(text: &str) -> (String, Option<&'static str>) {
+    match reason_migration_keyword(text) {
+        Some(keyword) => {
+            let prefix_len = keyword.len() + 4; // "**" + keyword + "**"
+            (format!("{keyword}{}", &text[prefix_len..]), Some(keyword))
+        }
+        None => (text.to_string(), None),
+    }
 }
 
 fn expand_arrow(expanded: bool) -> &'static str {
@@ -1414,9 +1445,50 @@ mod tests {
         assert!(text.contains('▸'));
         assert!(text.ends_with('…'));
 
+        // The excerpt is a character-exact truncation of the de-asterisked
+        // text (`Reason: ...`, not `**Reason**: ...`), so its length matches
+        // the same budget the intro row's own excerpt is measured against.
         let budget = paragraph_available(width, 1);
-        let excerpt = lines[0].spans.last().unwrap().content.as_ref();
-        assert_eq!(excerpt, truncate_chars(long_line.trim_end(), budget));
+        let pillcrow_idx = lines[0]
+            .spans
+            .iter()
+            .position(|s| s.content.as_ref() == "¶")
+            .expect("expected a pillcrow span");
+        let excerpt: String = lines[0].spans[pillcrow_idx + 2..]
+            .iter()
+            .flat_map(|s| s.content.chars())
+            .collect();
+        assert_eq!(excerpt.chars().count(), budget);
+        assert!(excerpt.starts_with("Reason:"));
+    }
+
+    #[test]
+    fn a_collapsed_removal_note_line_de_asterisks_the_reason_keyword_even_when_truncated() {
+        let long_line = format!("**Reason**: {}", "a very long reason ".repeat(20));
+        let row = DiffRow::RemovalNoteLine {
+            text: &long_line,
+            expanded: false,
+            key: removal_note_key(),
+            indent: 1,
+        };
+        let lines = row_lines(&row, 30);
+        let text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            !text.contains('*'),
+            "expected no literal ** in the collapsed excerpt, got {text:?}"
+        );
+        assert!(text.contains("Reason:"));
+
+        let keyword = lines[0]
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "Reason")
+            .expect("expected a span exactly matching Reason");
+        assert!(keyword.style.add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]
