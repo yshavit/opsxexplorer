@@ -14,10 +14,10 @@
 ## 3. tui-specdiff: render the removal note
 
 - [ ] 3.1 Add a removal-note row to the `DiffRow` model (or equivalent) for a removed requirement, positioned directly above its intro row, present only when `note` is non-empty
-- [ ] 3.2 Give it the pillcrow marker, the added gutter marker, and insertion styling, reusing the intro row's fits-in-one-line / collapsible-with-ellipsis measurement and rendering logic
+- [ ] 3.2 Give it the pillcrow marker, a blank gutter marker, and plain text styling (no diff-state colour), reusing the intro row's fits-in-one-line / collapsible-with-ellipsis measurement and rendering logic
 - [ ] 3.3 Start it collapsed the first time the requirement is expanded, matching the intro row's collapse-state initialization
 - [ ] 3.4 Add the removal-note row to the cursor's selectable-row set and to the "stops even when it fits" / "toggle has no effect when not collapsible" handling alongside the purpose and intro rows
-- [ ] 3.5 Add rendering tests: removal note above intro when present, no row when absent, insertion styling distinct from the deleted intro/scenario rows, short-note-renders-in-full, long-note-collapsible-starts-collapsed, cursor reaches and can toggle the row
+- [ ] 3.5 Add rendering tests: removal note above intro when present, no row when absent, plain styling and blank gutter marker distinct from both the added and deleted rows elsewhere in the pane, short-note-renders-in-full, long-note-collapsible-starts-collapsed, cursor reaches and can toggle the row
 
 ## 4. Verification
 
