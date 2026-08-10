@@ -13,11 +13,12 @@
 
 ## 3. tui-specdiff: render the removal note
 
-- [ ] 3.1 Add a removal-note row to the `DiffRow` model (or equivalent) for a removed requirement, positioned directly above its intro row, present only when `note` is non-empty
-- [ ] 3.2 Give it the pillcrow marker, a blank gutter marker, and plain text styling (no diff-state colour), reusing the intro row's fits-in-one-line / collapsible-with-ellipsis measurement and rendering logic
-- [ ] 3.3 Start it collapsed the first time the requirement is expanded, matching the intro row's collapse-state initialization
-- [ ] 3.4 Add the removal-note row to the cursor's selectable-row set and to the "stops even when it fits" / "toggle has no effect when not collapsible" handling alongside the purpose and intro rows
-- [ ] 3.5 Add rendering tests: removal note above intro when present, no row when absent, plain styling and blank gutter marker distinct from both the added and deleted rows elsewhere in the pane, short-note-renders-in-full, long-note-collapsible-starts-collapsed, cursor reaches and can toggle the row
+- [ ] 3.1 Split a removed requirement's non-empty `note` into paragraphs (reusing the same paragraph-boundary rule `spec-model` already applies to a multi-paragraph intro) and add one `DiffRow` (or equivalent) per paragraph, positioned directly above the requirement's intro row, in document order
+- [ ] 3.2 Give each row the pillcrow marker and modification styling (the same marker glyph/colour used for `Operation::Modified` and `Piece::Changed`), reusing the intro row's fits-in-one-line / collapsible-with-ellipsis measurement and rendering logic
+- [ ] 3.3 Add a `Reason`/`Migration` keyword-stripping helper alongside the existing `bullet_keyword`/`when_then_style` helpers in `src/tui/layout.rs`: detect a paragraph beginning `**Reason**` or `**Migration**`, strip that keyword's `**` and style it, leaving the rest of the paragraph and any non-matching paragraph unaffected
+- [ ] 3.4 Start each removal-note paragraph row collapsed the first time the requirement is expanded, matching the intro row's collapse-state initialization
+- [ ] 3.5 Add each removal-note paragraph row to the cursor's selectable-row set and to the "stops even when it fits" / "toggle has no effect when not collapsible" handling alongside the purpose and intro rows
+- [ ] 3.6 Add rendering tests: Reason paragraph and Migration paragraph both render above the intro in document order with their keyword de-asterisked and styled, an unrecognised paragraph still renders without keyword stripping, no rows when the note is absent, modification styling distinct from both the added and deleted rows elsewhere in the pane, short-paragraph-renders-in-full, long-paragraph-collapsible-starts-collapsed, cursor reaches and can toggle each row
 
 ## 4. Verification
 
