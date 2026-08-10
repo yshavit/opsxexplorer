@@ -5,7 +5,7 @@ use crate::vfs::FsError;
 
 /// Where a [`SpecError::Structure`] occurred, structurally rather than by
 /// line number: `md_elem` drops source positions during parsing, so a byte
-/// or line offset is not available. See design.md.
+/// or line offset is not available. See `2026-08-08-spec-model/design.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Location {
     /// The `## <OP> Requirements` (or `## Requirements`) section the failure occurred under.

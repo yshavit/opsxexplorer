@@ -14,7 +14,7 @@ use crate::specs::{DeltaEntry, DeltaOp, Requirement, SpecPair};
 /// record `pair` supplies, producing the per-requirement diff. Pure: no file
 /// reads, no git, no styling. Errors are per-entry, collected rather than
 /// short-circuiting, so one bad entry never suppresses the requirements that
-/// are fine (see design.md).
+/// are fine (see `2026-08-08-spec-diff/design.md`).
 pub fn diff(capability: &str, pair: &SpecPair) -> CapabilityDiff {
     let base_index = build_base_index(pair);
 
@@ -494,7 +494,8 @@ mod tests {
     }
 
     // --- 6.3/6.4: real fixture, reproduced inline so it survives this
-    // change's own archiving (see design.md and tasks.md 6.3) ---
+    // change's own archiving (see `2026-08-08-spec-diff/design.md` and
+    // `2026-08-08-spec-diff/tasks.md` 6.3) ---
 
     #[test]
     fn horizontal_scrolling_change_diffs_as_expected_against_its_base() {
@@ -776,8 +777,8 @@ mod tests {
     #[test]
     fn delta_purpose_wholly_dissimilar_from_base_purpose_is_reported_replaced() {
         // Same pair used by `compare`'s own `Piece::Replaced` calibration
-        // (design.md), reproduced inline so this test doesn't depend on that
-        // module's private test fixtures.
+        // (`2026-08-08-diff-legibility/design.md`), reproduced inline so
+        // this test doesn't depend on that module's private test fixtures.
         let base_purpose = "The left pane SHALL hold keyboard input focus for the duration of the application's runtime. There SHALL be no mechanism to move focus to the right pane.";
         let delta_purpose = "Exactly one pane SHALL hold keyboard input focus at any time. The left pane SHALL hold focus when the application starts. The system SHALL move focus to the other pane when the user presses Tab, and SHALL indicate which pane currently holds focus visually. A key pressed while a pane holds focus SHALL be handled by that pane, except for keys the application handles globally.";
         let delta_md = delta_with_purpose(delta_purpose);

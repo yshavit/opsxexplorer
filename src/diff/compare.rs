@@ -18,14 +18,14 @@ use crate::specs::Requirement;
 ///
 /// 0.238 → 0.483 is the largest gap in that distribution (0.245; the next
 /// largest is 0.095), so the threshold sits in the widest empty band the
-/// data offers. Full table and the rejected alternatives: the
-/// `diff-legibility` change's design.md.
+/// data offers. Full table and the rejected alternatives:
+/// `2026-08-08-diff-legibility/design.md`.
 const INLINE_DIFF_MIN_SIMILARITY: f32 = 0.35;
 
 /// The fraction of the two texts' combined bytes that the coalesced runs
 /// report as equal. Derived from the runs `runs()` already returned rather
 /// than a second `TextDiff` pass, so the measure and the reported runs can
-/// never disagree (see design.md).
+/// never disagree (see `2026-08-08-diff-legibility/design.md`).
 fn similarity(base: &str, delta: &str, runs: &[Run]) -> f32 {
     let equal_bytes: usize = runs
         .iter()
@@ -42,7 +42,8 @@ fn similarity(base: &str, delta: &str, runs: &[Run]) -> f32 {
 }
 
 /// The rule applied everywhere: absence in the delta means unmentioned,
-/// presence means authoritative for that piece (see design.md). A piece too
+/// presence means authoritative for that piece (see
+/// `2026-08-08-spec-diff/design.md`). A piece too
 /// dissimilar for an inline reading is reported as a wholesale replacement
 /// instead, unless either side is empty — there is then nothing to compare
 /// and no interleaving to avoid.
@@ -88,7 +89,8 @@ fn intro_piece(base: &str, delta: &str) -> Piece {
 /// applying the uniform rule to the intro and matching scenarios by name.
 /// Base scenarios are emitted first, in base order (matched or
 /// `Unmentioned`), followed by delta-only scenarios in delta order.
-/// Duplicate names resolve first-wins on both sides (see design.md).
+/// Duplicate names resolve first-wins on both sides (see
+/// `2026-08-08-spec-diff/design.md`).
 pub(crate) fn compare_requirement(
     base: &Requirement,
     delta: &Requirement,
@@ -317,8 +319,9 @@ mod tests {
     // --- diff-legibility 3.5-3.8: Piece::Replaced ---
     //
     // Fixtures below are inlined from this repo's own archive (see
-    // design.md's calibration table) rather than read from the archive
-    // directory, so the test survives this change's own archiving.
+    // `2026-08-08-diff-legibility/design.md`'s calibration table) rather
+    // than read from the archive directory, so the test survives this
+    // change's own archiving.
 
     // `tui-specdiff`'s rename of "Left pane holds input focus" to "Focus
     // moves between the two panes" — the archive's worst-scoring piece,

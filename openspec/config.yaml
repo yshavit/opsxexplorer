@@ -62,3 +62,16 @@ context: |
 #     archive:
 #       guidance:
 #         - Summarize the archive outcome before finishing
+
+operations:
+  archive:
+    guidance:
+      - >-
+        Check for source comments that reference "design.md" without naming
+        which archived change it belongs to:
+        `grep -rnE '(^|[^/])design\.md' src/` (intentionally not a lookbehind,
+        for portability). If this change introduced or edited any of the flagged
+        comments, update them before finishing the archive to name this change's
+        own archived directory instead of the bare filename, e.g. replace
+        "design.md" with "`YYYY-MM-DD-this-change-name/design.md`" using the
+        actual directory this change is being archived as.

@@ -234,7 +234,8 @@ fn render_right_scrollbar(frame: &mut Frame, area: Rect, offset: usize, max_line
 
 /// Renders the `?` help modal as a `Clear` + bordered popup over the two-pane
 /// layout, sized to its content and capped to the available frame (see
-/// design.md - Decision 4). The content itself is fully static — there's
+/// `2026-08-09-keybinding-help/design.md` - Decision 4). The content itself
+/// is fully static — there's
 /// nothing left to expand or collapse — so the popup's width never varies;
 /// only its height ever clamps, and only when the frame is too short to fit
 /// everything, in which case the content scrolls line by line.
@@ -458,7 +459,7 @@ fn purpose_heading_box(piece: &Piece, width: usize) -> Vec<Line<'static>> {
 /// degrading to a single unboxed line when `width` is too narrow for a box
 /// to make sense. Shared by `group_heading_box` and `purpose_heading_box` so
 /// the two headings' box-drawing and degrade behavior can never drift apart
-/// (see design.md).
+/// (see `2026-08-09-render-purpose/design.md`).
 fn heading_box(label: &str, style: Style, width: usize) -> Vec<Line<'static>> {
     let border_style = style;
     let label_style = border_style.add_modifier(Modifier::BOLD);
@@ -506,7 +507,7 @@ fn heading_label(op: &Operation, count: usize) -> String {
 
 /// Builds the tab bar as styled spans for `Block::title`, rather than using
 /// ratatui's `Tabs` widget, which renders into a `Rect` of its own and can't
-/// draw into a block's border (see design.md).
+/// draw into a block's border (see `2026-08-08-tui-specdiff/design.md`).
 fn tab_bar_title(names: &[String], selected: usize) -> Line<'static> {
     let mut spans = Vec::with_capacity(names.len() * 2);
     for (i, name) in names.iter().enumerate() {
@@ -566,7 +567,9 @@ fn row_spans(row: &Row) -> Vec<Span<'static>> {
 
 /// A row's total display width in columns, matching what `row_spans` renders. Row content is
 /// plain ASCII/kebab-case names and dates plus the `▸`/`▾` markers, so character count and
-/// rendered column width coincide here (see design.md - Risks / Trade-offs).
+/// rendered column width coincide here (see
+/// `2026-08-08-tui-changelist-horizontal-scrolling/design.md` - Risks /
+/// Trade-offs).
 fn row_display_width(row: &Row) -> usize {
     row_spans(row)
         .iter()
@@ -582,7 +585,8 @@ fn widest_row_width(rows: &[Row]) -> usize {
 /// the widest row's content width plus a one-column buffer plus the pane's
 /// two border columns, computed over `all_rows` (every row, archived
 /// included, regardless of expand state) so the width doesn't change as the
-/// archived section is toggled (see design.md).
+/// archived section is toggled (see
+/// `2026-08-09-tui-changelist-improvements/design.md`).
 fn left_pane_width(frame_width: u16, all_rows: &[Row]) -> u16 {
     const BUFFER_AND_BORDERS: usize = 1 + 2;
     let proportional_share = frame_width as usize * 35 / 100;
@@ -618,7 +622,8 @@ fn row_to_list_item(row: &Row, h_scroll: usize, dim: bool) -> ListItem<'static> 
 /// The flat neutral tone every colored span is reduced to while the help modal is
 /// open, replacing whichever color it originally carried. A single post-process
 /// step over already-styled output, rather than a "dimmed" parameter threaded
-/// through every color-producing call site (see design.md - Decision 5).
+/// through every color-producing call site (see
+/// `2026-08-09-keybinding-help/design.md` - Decision 5).
 const DESATURATED_COLOR: Color = Color::Gray;
 
 fn desaturate_style(style: Style) -> Style {

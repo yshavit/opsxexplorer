@@ -4,7 +4,7 @@ use crate::diff::error::DiffError;
 
 /// A span of text marked as unchanged, deleted or inserted. Offsets are byte
 /// ranges into the two body strings `spec-model` supplied, never into the
-/// source file (see design.md).
+/// source file (see `2026-08-08-spec-diff/design.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Run {
     Equal {
@@ -33,8 +33,8 @@ pub enum Piece {
         runs: Vec<Run>,
     },
     /// The two texts are too dissimilar for an inline diff to read better
-    /// than the two texts in turn (see the `diff-legibility` change's
-    /// design.md). Carries both texts in full and no runs.
+    /// than the two texts in turn (see `2026-08-08-diff-legibility/design.md`).
+    /// Carries both texts in full and no runs.
     Replaced {
         base: String,
         delta: String,

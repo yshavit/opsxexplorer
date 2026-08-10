@@ -6,10 +6,11 @@ use crate::diff::model::Run;
 
 /// Word-level diff runs between `base` and `delta`, as byte-offset ranges
 /// into the two strings exactly as supplied — no trimming, whitespace
-/// collapsing, re-wrapping or other normalisation (see design.md). Adjacent
+/// collapsing, re-wrapping or other normalisation (see
+/// `2026-08-08-spec-diff/design.md`). Adjacent
 /// changes sharing a tag are merged into a single run, and a whitespace-only
 /// equal run with a change on both sides is coalesced away rather than left
-/// to anchor the diff (see the `diff-legibility` change's design.md).
+/// to anchor the diff (see `2026-08-08-diff-legibility/design.md`).
 pub(crate) fn runs(base: &str, delta: &str) -> Vec<Run> {
     let diff = TextDiff::from_words(base, delta);
     let mut out: Vec<Run> = Vec::new();
@@ -73,7 +74,8 @@ fn is_whitespace_anchor(base: &str, runs: &[Run], i: usize) -> bool {
 /// delta text. Works at region granularity — splitting an individual equal
 /// run into a delete/insert pair and relying on adjacent same-tag merging
 /// does not work, since nothing then ends up adjacent to a same-tag neighbour
-/// (see design.md, Decisions). This can only ever destroy `Equal` runs, never
+/// (see `2026-08-08-diff-legibility/design.md`, Decisions). This can only
+/// ever destroy `Equal` runs, never
 /// fabricate one, so it preserves reconstruction: base order among deletes
 /// and delta order among inserts are both unchanged.
 fn coalesce_whitespace_anchors(base: &str, runs: Vec<Run>) -> Vec<Run> {

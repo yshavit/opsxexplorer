@@ -20,7 +20,8 @@ pub enum Focus {
 /// currently selected left-pane row. `Loaded` holds one entry per
 /// capability, in the order `specs::capabilities` enumerated them, each
 /// either the computed diff or the error that kept it from loading — one
-/// bad capability costs its own tab, not the pane (see design.md).
+/// bad capability costs its own tab, not the pane (see
+/// `2026-08-08-tui-specdiff/design.md`).
 enum DiffPaneState {
     /// The left-pane cursor is not on a change row.
     NotAChange,
@@ -66,7 +67,7 @@ pub struct App {
     cursor: usize,
     line_offset: usize,
     /// `max_line_offset` as computed by the most recent render, cached for the same
-    /// reason as `max_h_scroll` (see design.md).
+    /// reason as `max_h_scroll` (see `2026-08-08-tui-specdiff/design.md`).
     max_line_offset: usize,
     /// The right pane's visible row count as of the most recent render, mirroring
     /// `left_viewport_rows`.
@@ -74,14 +75,16 @@ pub struct App {
     /// The right pane's inner content width as of the most recent render, so
     /// `diff_rows()` can decide (via `diff_row::flatten`) whether the purpose
     /// row fits without the caller needing to pass it through explicitly.
-    /// Mirrors `right_viewport_rows`'s one-frame-lag pattern (see design.md).
+    /// Mirrors `right_viewport_rows`'s one-frame-lag pattern (see
+    /// `2026-08-09-render-purpose/design.md`).
     right_pane_width: usize,
 
     help_open: bool,
     help_line_offset: usize,
     /// `max_line_offset` as computed by the most recent render, mirroring
-    /// `max_h_scroll` (see design.md): the modal's content is fixed, but its
-    /// available height isn't, so this still needs to come from the renderer.
+    /// `max_h_scroll` (see `2026-08-09-keybinding-help/design.md`): the
+    /// modal's content is fixed, but its available height isn't, so this
+    /// still needs to come from the renderer.
     help_max_line_offset: usize,
     /// The help modal's visible row count as of the most recent render,
     /// mirroring `right_viewport_rows`.
@@ -128,7 +131,8 @@ impl App {
     /// Every row as if the archived section were expanded, regardless of
     /// `archived_expanded`'s actual state. Used solely for width/scroll-max
     /// computation, so those don't vary with whether the section happens to
-    /// be collapsed (see design.md).
+    /// be collapsed (see
+    /// `2026-08-09-tui-changelist-improvements/design.md`).
     pub fn all_rows(&self) -> Vec<Row<'_>> {
         row::flatten(&self.changes.active, &self.changes.archived, true)
     }
@@ -440,7 +444,8 @@ impl App {
 
     /// Recomputes the right pane's diff state for whatever the left pane's
     /// cursor is currently on. Called whenever the left-pane selection
-    /// moves — never per frame, since this does real I/O (see design.md).
+    /// moves — never per frame, since this does real I/O (see
+    /// `2026-08-08-tui-specdiff/design.md`).
     fn recompute_diff(&mut self) {
         let change = {
             let rows = self.rows();
@@ -482,7 +487,8 @@ impl App {
 /// Loads every capability the change touches and diffs each one, isolating
 /// failures per capability so one bad load doesn't cost its siblings. Only
 /// the pane-wide steps (resolving the change, opening its views, enumerating
-/// its capabilities) short-circuit the whole change (see design.md).
+/// its capabilities) short-circuit the whole change (see
+/// `2026-08-08-tui-specdiff/design.md`).
 fn load_diff_state(changes: &Changes, change: &Change) -> Result<DiffPaneState, ChangesError> {
     let view = changes.resolve(change)?;
     let views = changes.views(&view)?;
@@ -509,7 +515,8 @@ fn row_change<'a>(row: &Row<'a>) -> Option<&'a Change> {
 
 /// Half of a pane's visible row count, as a movement delta for `Ctrl+d`/`Ctrl+u`.
 /// Row-count-based, not line-count-based, so it reuses the same clamped movement
-/// path as single-step `j`/`k` (see design.md).
+/// path as single-step `j`/`k` (see
+/// `2026-08-08-tui-keybinding-improvements/design.md`).
 fn half_page(viewport_rows: usize) -> isize {
     (viewport_rows / 2) as isize
 }
@@ -972,7 +979,8 @@ mod tests {
         assert!(matches!(rows[app.cursor], DiffRow::Requirement { .. }));
 
         // Moving down lands on the intro row: it is selectable, per the same
-        // exception the purpose row already has (see design.md).
+        // exception the purpose row already has (see
+        // `2026-08-09-unified-intro-collapsing/design.md`).
         app.handle_key(key(KeyCode::Char('j')));
         let rows = app.diff_rows();
         assert!(matches!(

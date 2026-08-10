@@ -24,9 +24,10 @@ const PARAGRAPH_COLLAPSED_PREFIX: &str = "▸ ¶ ";
 /// collapsed row's own prefix width (not the plain `¶ ` prefix a fitting row
 /// would actually render) plus the row's own indent, so
 /// `diff_row::flatten`'s fits-check and this module's own collapsed-row
-/// truncation always agree on the same number (see design.md). Purpose is
-/// always at indent 0 (a sibling of `Requirement`); a requirement's intro is
-/// always at indent 1 (nested under it).
+/// truncation always agree on the same number (see
+/// `2026-08-09-render-purpose/design.md`). Purpose is always at indent 0 (a
+/// sibling of `Requirement`); a requirement's intro is always at indent 1
+/// (nested under it).
 pub(crate) fn paragraph_available(width: usize, indent: usize) -> usize {
     width
         .saturating_sub(GUTTER_WIDTH)
@@ -37,7 +38,7 @@ pub(crate) fn paragraph_available(width: usize, indent: usize) -> usize {
 /// A literal character-slice-plus-ellipsis truncation, indifferent to word
 /// boundaries — deliberately dumber than `wrap_spans`, for the one row in
 /// this pane whose collapsed form is an exact-width excerpt rather than a
-/// wrapped paragraph (see design.md).
+/// wrapped paragraph (see `2026-08-09-render-purpose/design.md`).
 pub(crate) fn truncate_chars(text: &str, width: usize) -> String {
     let mut truncated: String = text.chars().take(width.saturating_sub(1)).collect();
     truncated.push('…');
@@ -47,7 +48,8 @@ pub(crate) fn truncate_chars(text: &str, width: usize) -> String {
 /// Builds a row's spans, wraps them to the space left after the gutter and
 /// indent, and lays out the result as full lines: the marker prefixes only
 /// the first line, continuation lines get a blank gutter, and every line is
-/// left-padded by the row's indent (see design.md). A collapsed `Paragraph`
+/// left-padded by the row's indent (see
+/// `2026-08-08-tui-specdiff/design.md`). A collapsed `Paragraph`
 /// row is the one exception: its content is an exact-width excerpt or
 /// placeholder, not a wrapped paragraph, so it bypasses `wrap_spans`
 /// entirely (see `collapsed_paragraph_lines`).
@@ -88,7 +90,8 @@ pub fn row_lines(row: &DiffRow, width: usize) -> Vec<Line<'static>> {
 
 /// The placeholder a collapsed, wholesale-replacement paragraph row shows in
 /// place of any excerpt of either text — a short slice of just the new text
-/// would misrepresent a rewrite as an ordinary edit (see design.md).
+/// would misrepresent a rewrite as an ordinary edit (see
+/// `2026-08-09-render-purpose/design.md`).
 const REPLACED_PARAGRAPH_PLACEHOLDER: &str = "Expand to view diff";
 
 /// Renders a collapsed paragraph row (purpose, or a requirement's intro at
@@ -97,8 +100,9 @@ const REPLACED_PARAGRAPH_PLACEHOLDER: &str = "Expand to view diff";
 /// character-slice excerpt of the piece's current text (every variant except
 /// `Replaced`, via `paragraph_text`) or the italic placeholder (`Replaced`),
 /// each truncated with `truncate_chars` only when it doesn't already fit
-/// (see design.md). The excerpt is de-emphasised when `piece` is
-/// `Unmentioned`, matching the expanded path's own dimming.
+/// (see `2026-08-09-render-purpose/design.md`). The excerpt is
+/// de-emphasised when `piece` is `Unmentioned`, matching the expanded path's
+/// own dimming.
 fn collapsed_paragraph_lines(piece: &Piece, width: usize, indent: usize) -> Vec<Line<'static>> {
     let (marker, marker_style) = piece_marker(piece);
     let budget = paragraph_available(width, indent);
@@ -347,7 +351,7 @@ fn piece_spans(piece: &Piece) -> Vec<Span<'static>> {
 /// `base` styled as a deletion, `Insert` slices `delta` styled as an
 /// insertion. Slices go through `str::get`, so a run whose range does not
 /// land on a char boundary in the supplied string yields an empty span
-/// instead of panicking (see design.md).
+/// instead of panicking (see `2026-08-08-tui-specdiff/design.md`).
 fn changed_spans(base: &str, delta: &str, runs: &[Run]) -> Vec<Span<'static>> {
     runs.iter()
         .map(|run| match run {
@@ -368,7 +372,8 @@ fn slice(s: &str, range: &Range<usize>) -> String {
 /// row's flattened character stream so a keyword split across spans by
 /// word-diff highlighting is still caught. Every other character keeps its
 /// original style; the keyword's characters layer `when_then_style()` on
-/// top of theirs rather than replacing it (see design.md).
+/// top of theirs rather than replacing it (see
+/// `2026-08-08-when-then-formatting/design.md`).
 fn style_when_then(spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
     let chars: Vec<(char, Style)> = spans
         .into_iter()

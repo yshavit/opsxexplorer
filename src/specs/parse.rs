@@ -1,5 +1,6 @@
-//! The only file that mentions `mdq` — see design.md's "module stays plain
-//! `String`s" decision. Parses OpenSpec spec markdown (main and delta) using
+//! The only file that mentions `mdq` — see
+//! `2026-08-08-spec-model/design.md`'s "module stays plain `String`s"
+//! decision. Parses OpenSpec spec markdown (main and delta) using
 //! `mdq::md_elem`'s hierarchical section tree: a `##` section's body
 //! contains its `###` subsections, whose bodies contain their `####`
 //! subsections, which is exactly the Requirements -> Requirement -> Scenario

@@ -79,7 +79,7 @@ const ENTRY_INDENT: &str = "  ";
 /// The help modal's full content, always in full: there's nothing to
 /// expand or collapse, so this is the only content the modal ever shows,
 /// and its shape (and therefore the modal's width) never varies with scroll
-/// position (see design.md).
+/// position (see `2026-08-09-keybinding-help/design.md`).
 pub fn lines() -> Vec<Line<'static>> {
     let key_width = key_column_width();
     let mut lines = Vec::new();

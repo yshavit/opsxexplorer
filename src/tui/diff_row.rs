@@ -7,8 +7,9 @@ use super::layout;
 
 /// Identifies a row's collapse state by name rather than by its position in
 /// the flattened list, so the set survives re-flattening when the tree's
-/// shape changes (see design.md). `Purpose` addresses the capability-level
-/// purpose row, which has no requirement name to hang off of.
+/// shape changes (see `2026-08-08-tui-specdiff/design.md`). `Purpose`
+/// addresses the capability-level purpose row, which has no requirement name
+/// to hang off of.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum RowKey {
     Purpose {
@@ -38,7 +39,8 @@ pub enum DiffRow<'a> {
     PurposeHeading(&'a Piece),
     /// A paragraph-shaped comparison (the capability's purpose, or a
     /// requirement's intro) whose text fits in full on one line: no collapse
-    /// affordance, but still selectable (see design.md). `indent` is the
+    /// affordance, but still selectable (see
+    /// `2026-08-09-render-purpose/design.md`). `indent` is the
     /// row's nesting depth: 0 for purpose, 1 for a requirement's intro.
     ParagraphFull {
         piece: &'a Piece,
@@ -85,7 +87,7 @@ impl DiffRow<'_> {
     /// The collapse-state key for a selectable row, so key-based toggling
     /// doesn't need to re-derive it from surrounding context. `ParagraphFull`
     /// falls through to `None` deliberately: it has nothing to toggle (see
-    /// design.md).
+    /// `2026-08-09-render-purpose/design.md`).
     pub fn key(&self) -> Option<&RowKey> {
         match self {
             DiffRow::Requirement { key, .. }
@@ -108,10 +110,11 @@ impl DiffRow<'_> {
 /// Flattens a capability's diff into the rows the right pane renders and
 /// navigates over, given which rows the collapse-state set currently marks
 /// as expanded and the pane's current width (needed only to decide whether
-/// the purpose row, if any, can collapse at all — see design.md). Errors are
-/// surfaced as `Notice` rows above the tree, the purpose comparison (if any)
-/// follows them, and a group heading is emitted only when the run of entries
-/// it introduces is non-empty (see design.md, spec.md).
+/// the purpose row, if any, can collapse at all — see
+/// `2026-08-09-render-purpose/design.md`). Errors are surfaced as `Notice`
+/// rows above the tree, the purpose comparison (if any) follows them, and a
+/// group heading is emitted only when the run of entries it introduces is
+/// non-empty (see `2026-08-08-tui-specdiff/design.md`, spec.md).
 pub fn flatten<'a>(
     diff: &'a CapabilityDiff,
     expanded: &HashSet<RowKey>,
@@ -142,7 +145,8 @@ pub fn flatten<'a>(
 /// Extracts a piece's "current text" — the single passage of ordinary text
 /// it renders when collapsed to an excerpt. Every `Piece` variant except
 /// `Replaced` is exactly one such passage; a wholesale replacement has no
-/// single "current text" and is always collapsible (see design.md).
+/// single "current text" and is always collapsible (see
+/// `2026-08-09-unified-intro-collapsing/design.md`).
 pub(crate) fn paragraph_text(piece: &Piece) -> Option<&str> {
     match piece {
         Piece::Unchanged { text } => Some(text),
@@ -160,7 +164,7 @@ pub(crate) fn paragraph_text(piece: &Piece) -> Option<&str> {
 /// trimmed of trailing whitespace, doesn't fit the row's available width at
 /// `width`/`indent` — the same budget the collapsed row's own truncation
 /// uses (`layout::paragraph_available`), so the two decisions can never
-/// disagree (see design.md).
+/// disagree (see `2026-08-09-render-purpose/design.md`).
 fn push_paragraph_row<'a>(
     rows: &mut Vec<DiffRow<'a>>,
     piece: &'a Piece,

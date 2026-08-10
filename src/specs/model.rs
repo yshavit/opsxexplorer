@@ -10,7 +10,8 @@ pub struct Scenario {
 /// `intro` is a plain `String`, not `Option<String>`: a requirement with no
 /// intro block and one with an empty intro block are indistinguishable in
 /// the source (the only textual difference is a blank line, which carries
-/// no authorial intent), so both parse to `""`. See design.md.
+/// no authorial intent), so both parse to `""`. See
+/// `2026-08-08-spec-model/design.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Requirement {
     pub name: String,
@@ -37,7 +38,8 @@ pub enum DeltaOp {
 ///
 /// A `Removed` entry is a `DeltaEntry` like any other, just with an empty
 /// `intro` and `scenarios: []` — a removal is genuinely a requirement
-/// identified by name, and its body is recovered from the base. See design.md.
+/// identified by name, and its body is recovered from the base. See
+/// `2026-08-08-spec-model/design.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeltaEntry {
     pub op: DeltaOp,
@@ -48,7 +50,7 @@ pub struct DeltaEntry {
 /// the name it is renamed to. Kept as a separate list rather than a
 /// `DeltaOp` variant, since it has no heading, body, or intro of its own —
 /// folding it into `DeltaEntry` would leave those fields meaningless. See
-/// design.md.
+/// `2026-08-08-spec-model/design.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rename {
     pub from: String,
