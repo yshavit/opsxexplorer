@@ -60,7 +60,7 @@ pub struct ScenarioDiff {
 pub enum Operation {
     Added,
     Modified,
-    Removed,
+    Removed { note: String },
     Renamed { from: String },
 }
 

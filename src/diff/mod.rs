@@ -86,7 +86,9 @@ pub fn diff(capability: &str, pair: &SpecPair) -> CapabilityDiff {
             Some(base_req) => {
                 requirements.push(RequirementDiff {
                     name: name.to_string(),
-                    op: Operation::Removed,
+                    op: Operation::Removed {
+                        note: entry.requirement.intro.clone(),
+                    },
                     intro: Piece::Deleted {
                         base: base_req.intro.clone(),
                     },
@@ -267,7 +269,9 @@ mod tests {
             vec![
                 &Operation::Added,
                 &Operation::Modified,
-                &Operation::Removed,
+                &Operation::Removed {
+                    note: String::new()
+                },
                 &Operation::Renamed {
                     from: "Old Name".to_string()
                 },
@@ -277,6 +281,77 @@ mod tests {
         assert_eq!(result.requirements[1].name, "To Modify");
         assert_eq!(result.requirements[2].name, "To Remove");
         assert_eq!(result.requirements[3].name, "New Name");
+    }
+
+    // --- spec-model-removals: removal note carried on Operation::Removed ---
+
+    #[test]
+    fn removal_entry_with_body_text_produces_a_removal_note() {
+        let base_md = "## Requirements\n\n\
+            ### Requirement: To Remove\n\
+            Intro.\n\n\
+            #### Scenario: A\n\
+            - **WHEN** a\n\
+            - **THEN** a2\n";
+        let delta_md = "## REMOVED Requirements\n\n\
+            ### Requirement: To Remove\n\
+            **Reason**: no longer needed.\n\
+            **Migration**: use the new thing instead.\n";
+        let pair = pair_from_markdown(delta_md, Some(base_md));
+        let result = diff("cap", &pair);
+        assert!(result.errors.is_empty());
+        let req = &result.requirements[0];
+        match &req.op {
+            Operation::Removed { note } => {
+                assert!(note.contains("**Reason**: no longer needed."));
+                assert!(note.contains("**Migration**: use the new thing instead."));
+            }
+            other => panic!("expected Operation::Removed, got {other:?}"),
+        }
+        // The intro/scenario Piece comparisons stay pure deletions from the
+        // base, unaffected by the removal note.
+        assert_eq!(
+            req.intro,
+            Piece::Deleted {
+                base: "Intro.".to_string()
+            }
+        );
+        assert!(
+            req.scenarios
+                .iter()
+                .all(|s| matches!(s.body, Piece::Deleted { .. }))
+        );
+    }
+
+    #[test]
+    fn bare_removal_entry_produces_an_empty_removal_note() {
+        let base_md = "## Requirements\n\n\
+            ### Requirement: To Remove\n\
+            Intro.\n\n\
+            #### Scenario: A\n\
+            - **WHEN** a\n\
+            - **THEN** a2\n";
+        let delta_md = "## REMOVED Requirements\n\n\
+            ### Requirement: To Remove\n";
+        let pair = pair_from_markdown(delta_md, Some(base_md));
+        let result = diff("cap", &pair);
+        assert!(result.errors.is_empty());
+        let req = &result.requirements[0];
+        match &req.op {
+            Operation::Removed { note } => assert_eq!(note, ""),
+            other => panic!("expected Operation::Removed, got {other:?}"),
+        }
+        assert_eq!(
+            req.intro,
+            Piece::Deleted {
+                base: "Intro.".to_string()
+            }
+        );
+        assert!(
+            req.scenarios
+                .iter()
+                .all(|s| matches!(s.body, Piece::Deleted { .. }))
+        );
     }
 
     #[test]

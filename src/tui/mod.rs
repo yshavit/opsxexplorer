@@ -340,10 +340,13 @@ fn build_diff_lines(
                 // A requirement's intro (indent 1) is part of the revealed
                 // content under it, like `Body`; the capability's purpose
                 // (indent 0) is not nested under a requirement, so it always
-                // leaves the block.
-                DiffRow::Paragraph { indent, .. } | DiffRow::ParagraphFull { indent, .. } => {
-                    *indent == 0
-                }
+                // leaves the block. A removed requirement's removal-note
+                // lines sit at the same indent as its intro, for the same
+                // reason.
+                DiffRow::Paragraph { indent, .. }
+                | DiffRow::ParagraphFull { indent, .. }
+                | DiffRow::RemovalNoteLine { indent, .. }
+                | DiffRow::RemovalNoteFull { indent, .. } => *indent == 0,
                 DiffRow::Scenario { .. } => !cursor_is_requirement,
                 DiffRow::Requirement { .. }
                 | DiffRow::GroupHeading(_)

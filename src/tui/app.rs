@@ -1280,6 +1280,118 @@ mod tests {
         assert_eq!(app.diff_rows()[app.cursor].expanded(), Some(false));
     }
 
+    // --- removal-note row wiring (spec-model-removals) ---
+
+    fn diff_with_removal_note(capability: &str, note: &str) -> CapabilityDiff {
+        let mut diff = sample_diff(capability);
+        diff.requirements[0].op = Operation::Removed {
+            note: note.to_string(),
+        };
+        diff
+    }
+
+    #[test]
+    fn cursor_reaches_and_toggles_a_non_fitting_removal_note_line_row() {
+        let long_line = "abcdefghijklmnopqrstuvwxyz".repeat(3);
+        let note = format!("**Reason**: {long_line}\n**Migration**: do the other thing.");
+        let diff = diff_with_removal_note("cap", &note);
+        let mut app = app_with_loaded(vec![("cap", diff)]);
+        app.focus = Focus::Right;
+        app.set_right_pane_width(10); // narrow enough that the Reason line doesn't fit.
+        expand_only_requirement(&mut app, "cap");
+        app.reset_cursor_to_first_selectable();
+        app.handle_key(key(KeyCode::Char('j'))); // move from Requirement onto the first removal-note row.
+
+        let rows = app.diff_rows();
+        assert!(
+            matches!(rows[app.cursor], DiffRow::RemovalNoteLine { indent: 1, .. }),
+            "expected cursor to stop on the removal-note line's collapsible row, got {:?}",
+            rows[app.cursor]
+        );
+        assert_eq!(rows[app.cursor].expanded(), Some(false));
+
+        app.handle_key(key(KeyCode::Char('l')));
+        assert_eq!(app.diff_rows()[app.cursor].expanded(), Some(true));
+
+        app.handle_key(key(KeyCode::Char('h')));
+        assert_eq!(app.diff_rows()[app.cursor].expanded(), Some(false));
+
+        // The Migration line follows as its own row, still above the intro.
+        app.handle_key(key(KeyCode::Char('j')));
+        let rows = app.diff_rows();
+        assert!(
+            matches!(rows[app.cursor], DiffRow::RemovalNoteLine { .. })
+                || matches!(rows[app.cursor], DiffRow::RemovalNoteFull { .. }),
+            "expected cursor to reach the Migration line row, got {:?}",
+            rows[app.cursor]
+        );
+
+        app.handle_key(key(KeyCode::Char('j')));
+        assert!(
+            matches!(
+                app.diff_rows()[app.cursor],
+                DiffRow::ParagraphFull { indent: 1, .. } | DiffRow::Paragraph { indent: 1, .. }
+            ),
+            "expected the intro row directly after the removal-note rows"
+        );
+    }
+
+    #[test]
+    fn toggle_keys_on_a_fitting_removal_note_line_row_are_inert() {
+        let note = "**Reason**: short.".to_string();
+        let diff = diff_with_removal_note("cap", &note);
+        let mut app = app_with_loaded(vec![("cap", diff)]);
+        app.focus = Focus::Right;
+        app.set_right_pane_width(200); // wide enough that the line fits.
+        expand_only_requirement(&mut app, "cap");
+        app.reset_cursor_to_first_selectable();
+        app.handle_key(key(KeyCode::Char('j'))); // move from Requirement onto the removal-note row.
+
+        let rows = app.diff_rows();
+        assert!(
+            matches!(rows[app.cursor], DiffRow::RemovalNoteFull { indent: 1, .. }),
+            "expected cursor to stop on the removal-note's RemovalNoteFull row, got {:?}",
+            rows[app.cursor]
+        );
+
+        let cursor_before = app.cursor;
+        let expanded_before = app.expanded.clone();
+
+        for code in [
+            KeyCode::Enter,
+            KeyCode::Char(' '),
+            KeyCode::Char('l'),
+            KeyCode::Char('h'),
+        ] {
+            app.handle_key(key(code));
+        }
+
+        assert_eq!(app.cursor, cursor_before);
+        assert_eq!(app.expanded, expanded_before);
+    }
+
+    #[test]
+    fn a_bare_removal_shows_no_removal_note_rows() {
+        let diff = diff_with_removal_note("cap", "");
+        let mut app = app_with_loaded(vec![("cap", diff)]);
+        app.focus = Focus::Right;
+        app.set_right_pane_width(200);
+        expand_only_requirement(&mut app, "cap");
+        app.reset_cursor_to_first_selectable();
+
+        let rows = app.diff_rows();
+        assert!(!rows.iter().any(|r| matches!(
+            r,
+            DiffRow::RemovalNoteLine { .. } | DiffRow::RemovalNoteFull { .. }
+        )));
+
+        app.handle_key(key(KeyCode::Char('j'))); // move from Requirement onto the intro row.
+        assert!(matches!(
+            app.diff_rows()[app.cursor],
+            DiffRow::ParagraphFull { indent: 1, .. } | DiffRow::Paragraph { indent: 1, .. }
+        ));
+    }
+
     // --- unrecognised-sections row wiring (unrecognized-spec-sections 3.6) ---
 
     fn diff_with_unrecognized_sections(capability: &str, titles: Vec<&str>) -> CapabilityDiff {
