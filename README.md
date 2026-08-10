@@ -44,8 +44,8 @@ Nothing more.
 
 ## Usage
 
-- `q` to quit
-- `?` to show help
+- <kbd>q</kbd> to quit
+- <kbd>?</kbd> to show help
 - I'll let the help screen do the rest of the talking :-)
 
 ## Development
