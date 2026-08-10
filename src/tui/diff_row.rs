@@ -28,6 +28,9 @@ pub enum RowKey {
         requirement: String,
         scenario: String,
     },
+    UnrecognizedSections {
+        capability: String,
+    },
 }
 
 /// A single visible row in the right pane's flattened tree.
@@ -71,6 +74,16 @@ pub enum DiffRow<'a> {
         piece: &'a Piece,
     },
     Notice(String),
+    /// A display-only heading introducing the capability's unrecognised
+    /// section titles below it.
+    UnrecognizedSectionsHeading,
+    /// The one content row listing a capability's unrecognised section
+    /// titles: selectable so the cursor's scroll-into-view logic can reach
+    /// it, but not collapsible (see `2026-08-10-unrecognized-spec-sections/design.md`).
+    UnrecognizedSections {
+        titles: &'a [String],
+        key: RowKey,
+    },
 }
 
 impl DiffRow<'_> {
@@ -81,18 +94,22 @@ impl DiffRow<'_> {
                 | DiffRow::Scenario { .. }
                 | DiffRow::Paragraph { .. }
                 | DiffRow::ParagraphFull { .. }
+                | DiffRow::UnrecognizedSections { .. }
         )
     }
 
     /// The collapse-state key for a selectable row, so key-based toggling
     /// doesn't need to re-derive it from surrounding context. `ParagraphFull`
     /// falls through to `None` deliberately: it has nothing to toggle (see
-    /// `2026-08-09-render-purpose/design.md`).
+    /// `2026-08-09-render-purpose/design.md`). `UnrecognizedSections` carries
+    /// a key for the same reason (see `2026-08-10-unrecognized-spec-sections/design.md`),
+    /// despite also having nothing to toggle.
     pub fn key(&self) -> Option<&RowKey> {
         match self {
             DiffRow::Requirement { key, .. }
             | DiffRow::Scenario { key, .. }
-            | DiffRow::Paragraph { key, .. } => Some(key),
+            | DiffRow::Paragraph { key, .. }
+            | DiffRow::UnrecognizedSections { key, .. } => Some(key),
             _ => None,
         }
     }
@@ -137,6 +154,16 @@ pub fn flatten<'a>(
             last_kind = Some(discriminant(&req.op));
         }
         push_requirement(&mut rows, diff, req, expanded, width);
+    }
+
+    if !diff.unrecognized_sections.is_empty() {
+        rows.push(DiffRow::UnrecognizedSectionsHeading);
+        rows.push(DiffRow::UnrecognizedSections {
+            titles: &diff.unrecognized_sections,
+            key: RowKey::UnrecognizedSections {
+                capability: diff.capability.clone(),
+            },
+        });
     }
 
     rows
@@ -298,6 +325,7 @@ mod tests {
             requirements,
             errors: vec![],
             purpose: None,
+            unrecognized_sections: vec![],
         }
     }
 
@@ -767,5 +795,88 @@ mod tests {
             .find(|r| matches!(r, DiffRow::Paragraph { indent: 1, .. }))
             .expect("expected a collapsible intro row");
         assert_eq!(intro_row.expanded(), Some(true));
+    }
+
+    // --- unrecognised sections (unrecognized-spec-sections 3.6) ---
+
+    fn diff_with_unrecognized_sections(titles: Vec<&str>) -> CapabilityDiff {
+        let mut diff = capability_diff(vec![requirement(
+            "Req",
+            Operation::Added,
+            unchanged("intro"),
+            vec![],
+        )]);
+        diff.unrecognized_sections = titles.into_iter().map(str::to_string).collect();
+        diff
+    }
+
+    #[test]
+    fn unrecognized_sections_heading_and_row_render_below_requirement_groups() {
+        let diff = diff_with_unrecognized_sections(vec!["Bogus One", "Bogus Two"]);
+        let rows = flatten(&diff, &HashSet::new(), WIDE);
+
+        let heading_idx = rows
+            .iter()
+            .position(|r| matches!(r, DiffRow::UnrecognizedSectionsHeading))
+            .expect("expected an UnrecognizedSectionsHeading row");
+        let content_idx = rows
+            .iter()
+            .position(|r| matches!(r, DiffRow::UnrecognizedSections { .. }))
+            .expect("expected an UnrecognizedSections row");
+
+        // Both rows sit at the very end, after every group heading and
+        // requirement row, the content row directly after the heading.
+        assert_eq!(heading_idx, rows.len() - 2);
+        assert_eq!(content_idx, rows.len() - 1);
+        assert!(matches!(rows[0], DiffRow::GroupHeading(Operation::Added)));
+
+        match &rows[content_idx] {
+            DiffRow::UnrecognizedSections { titles, .. } => {
+                assert_eq!(*titles, ["Bogus One".to_string(), "Bogus Two".to_string()]);
+            }
+            other => panic!("expected UnrecognizedSections, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn no_unrecognized_sections_renders_neither_heading_nor_row() {
+        let diff = diff_with_unrecognized_sections(vec![]);
+        let rows = flatten(&diff, &HashSet::new(), WIDE);
+        assert!(
+            !rows
+                .iter()
+                .any(|r| matches!(r, DiffRow::UnrecognizedSectionsHeading))
+        );
+        assert!(
+            !rows
+                .iter()
+                .any(|r| matches!(r, DiffRow::UnrecognizedSections { .. }))
+        );
+    }
+
+    #[test]
+    fn unrecognized_sections_content_row_is_selectable_with_a_stable_key() {
+        let diff = diff_with_unrecognized_sections(vec!["Bogus"]);
+        let rows = flatten(&diff, &HashSet::new(), WIDE);
+        let content_row = rows
+            .iter()
+            .find(|r| matches!(r, DiffRow::UnrecognizedSections { .. }))
+            .expect("expected an UnrecognizedSections row");
+
+        assert!(content_row.is_selectable());
+        assert_eq!(
+            content_row.key(),
+            Some(&RowKey::UnrecognizedSections {
+                capability: "cap".to_string()
+            })
+        );
+        assert_eq!(content_row.expanded(), None);
+
+        let heading_row = rows
+            .iter()
+            .find(|r| matches!(r, DiffRow::UnrecognizedSectionsHeading))
+            .expect("expected an UnrecognizedSectionsHeading row");
+        assert!(!heading_row.is_selectable());
+        assert_eq!(heading_row.key(), None);
     }
 }

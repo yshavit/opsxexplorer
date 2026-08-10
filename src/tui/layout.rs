@@ -148,7 +148,9 @@ fn indent_depth(row: &DiffRow) -> usize {
         DiffRow::GroupHeading(_)
         | DiffRow::PurposeHeading(_)
         | DiffRow::Requirement { .. }
-        | DiffRow::Notice(_) => 0,
+        | DiffRow::Notice(_)
+        | DiffRow::UnrecognizedSectionsHeading
+        | DiffRow::UnrecognizedSections { .. } => 0,
         DiffRow::Scenario { .. } => 1,
         DiffRow::Body { .. } => 2,
     }
@@ -159,7 +161,9 @@ fn gutter_marker(row: &DiffRow) -> (&'static str, Style) {
         DiffRow::GroupHeading(_)
         | DiffRow::PurposeHeading(_)
         | DiffRow::Body { .. }
-        | DiffRow::Notice(_) => (" ", Style::default()),
+        | DiffRow::Notice(_)
+        | DiffRow::UnrecognizedSectionsHeading
+        | DiffRow::UnrecognizedSections { .. } => (" ", Style::default()),
         DiffRow::Requirement { op, .. } => requirement_marker(op),
         DiffRow::Scenario { body, .. } => piece_marker(body),
         DiffRow::ParagraphFull { piece, .. } => piece_marker(piece),
@@ -225,6 +229,13 @@ pub(crate) fn modified_style() -> Style {
     Style::new().fg(Color::Yellow)
 }
 
+/// The style for the "Unknown sections" heading and its content, a
+/// hand-picked purple distinct from every other color used in the pane (see
+/// `2026-08-10-unrecognized-spec-sections/design.md`).
+pub(crate) fn unrecognised_style() -> Style {
+    Style::new().fg(Color::Rgb(147, 51, 234))
+}
+
 /// The style for a scenario body's `WHEN`/`THEN`/`AND` bullet keyword,
 /// layered on top of whatever style the keyword's characters already carry
 /// (e.g. a word-diff run's color) rather than replacing it.
@@ -280,6 +291,10 @@ fn content_spans(row: &DiffRow) -> Vec<Span<'static>> {
         // Display-only; always rendered through `purpose_heading_box`
         // instead (see `build_diff_lines`), never through this path.
         DiffRow::PurposeHeading(_) => vec![],
+        // Both always rendered through the `unrecognized_sections_*`
+        // functions instead (see `build_diff_lines`), never through this
+        // path.
+        DiffRow::UnrecognizedSectionsHeading | DiffRow::UnrecognizedSections { .. } => vec![],
         DiffRow::ParagraphFull { piece, .. } => {
             let (_, marker_style) = piece_marker(piece);
             let mut spans = vec![Span::styled("¶", marker_style), Span::raw(" ")];

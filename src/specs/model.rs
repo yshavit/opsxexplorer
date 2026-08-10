@@ -63,6 +63,9 @@ pub struct Delta {
     pub purpose: Option<String>,
     pub entries: Vec<DeltaEntry>,
     pub renames: Vec<Rename>,
+    /// Titles of `##` sections the parser did not recognise, in document
+    /// order. See `2026-08-10-unrecognized-spec-sections/design.md`.
+    pub unrecognized_sections: Vec<String>,
 }
 
 /// Both sides of a change-and-capability pair, as loaded by [`crate::specs::load`].

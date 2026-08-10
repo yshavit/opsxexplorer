@@ -778,6 +778,7 @@ mod tests {
             }],
             errors: vec![],
             purpose: None,
+            unrecognized_sections: vec![],
         }
     }
 
@@ -1277,6 +1278,113 @@ mod tests {
 
         app.handle_key(key(KeyCode::Char('h')));
         assert_eq!(app.diff_rows()[app.cursor].expanded(), Some(false));
+    }
+
+    // --- unrecognised-sections row wiring (unrecognized-spec-sections 3.6) ---
+
+    fn diff_with_unrecognized_sections(capability: &str, titles: Vec<&str>) -> CapabilityDiff {
+        let mut diff = sample_diff(capability);
+        diff.unrecognized_sections = titles.into_iter().map(str::to_string).collect();
+        diff
+    }
+
+    #[test]
+    fn cursor_skips_the_unrecognized_sections_heading_and_stops_on_the_content_row() {
+        let diff = diff_with_unrecognized_sections("cap", vec!["Bogus Section"]);
+        let mut app = app_with_loaded(vec![("cap", diff)]);
+        app.focus = Focus::Right;
+        app.set_right_pane_width(200);
+
+        let rows = app.diff_rows();
+        let heading_idx = rows
+            .iter()
+            .position(|r| matches!(r, DiffRow::UnrecognizedSectionsHeading))
+            .expect("expected an UnrecognizedSectionsHeading row");
+        let content_idx = rows
+            .iter()
+            .position(|r| matches!(r, DiffRow::UnrecognizedSections { .. }))
+            .expect("expected an UnrecognizedSections row");
+        assert_eq!(content_idx, heading_idx + 1);
+
+        // Move the cursor all the way to the bottom: it should land on the
+        // content row, never on the heading.
+        for _ in 0..rows.len() {
+            app.handle_key(key(KeyCode::Char('j')));
+        }
+        assert_eq!(app.cursor, content_idx);
+        assert!(matches!(
+            app.diff_rows()[app.cursor],
+            DiffRow::UnrecognizedSections { .. }
+        ));
+    }
+
+    #[test]
+    fn toggle_keys_on_the_unrecognized_sections_row_are_inert() {
+        let diff = diff_with_unrecognized_sections("cap", vec!["Bogus Section"]);
+        let mut app = app_with_loaded(vec![("cap", diff)]);
+        app.focus = Focus::Right;
+        app.set_right_pane_width(200);
+
+        let rows = app.diff_rows();
+        let content_idx = rows
+            .iter()
+            .position(|r| matches!(r, DiffRow::UnrecognizedSections { .. }))
+            .expect("expected an UnrecognizedSections row");
+        app.cursor = content_idx;
+
+        let cursor_before = app.cursor;
+        let expanded_before = app.expanded.clone();
+
+        for code in [
+            KeyCode::Enter,
+            KeyCode::Char(' '),
+            KeyCode::Char('l'),
+            KeyCode::Char('h'),
+        ] {
+            app.handle_key(key(code));
+        }
+
+        assert_eq!(app.cursor, cursor_before);
+        assert_eq!(app.expanded, expanded_before);
+        assert_eq!(
+            app.diff_rows()[app.cursor].expanded(),
+            None,
+            "the content row has no collapsed/expanded state"
+        );
+    }
+
+    #[test]
+    fn ctrl_d_can_scroll_the_cursor_onto_the_unrecognized_sections_row() {
+        let mut diff = sample_diff("cap");
+        diff.requirements = (0..20)
+            .map(|i| RequirementDiff {
+                name: format!("Req{i}"),
+                op: Operation::Added,
+                intro: unchanged("intro"),
+                scenarios: vec![],
+            })
+            .collect();
+        diff.unrecognized_sections = vec!["Bogus Section".to_string()];
+        let mut app = app_with_loaded(vec![("cap", diff)]);
+        app.focus = Focus::Right;
+        app.set_right_viewport_rows(10);
+
+        let rows = app.diff_rows();
+        let content_idx = rows
+            .iter()
+            .position(|r| matches!(r, DiffRow::UnrecognizedSections { .. }))
+            .expect("expected an UnrecognizedSections row");
+        let last = rows.len() - 1;
+        assert_eq!(
+            content_idx, last,
+            "the content row should be the last selectable row"
+        );
+
+        // Far more than enough Ctrl+d presses to reach the bottom from the top.
+        for _ in 0..10 {
+            app.handle_key(ctrl_key(KeyCode::Char('d')));
+        }
+        assert_eq!(app.cursor, content_idx);
     }
 
     // --- left pane: Enter/Space focus-shift ---

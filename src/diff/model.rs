@@ -82,4 +82,8 @@ pub struct CapabilityDiff {
     /// The capability's purpose comparison, if there is anything to report:
     /// only ever `Added`, `Changed` or `Replaced` (see `diff()`).
     pub purpose: Option<Piece>,
+    /// Titles of `##` sections the delta's parser did not recognise, carried
+    /// through unchanged and in the same order. See
+    /// `2026-08-10-unrecognized-spec-sections/design.md`.
+    pub unrecognized_sections: Vec<String>,
 }

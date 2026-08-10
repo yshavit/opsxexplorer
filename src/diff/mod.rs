@@ -137,6 +137,7 @@ pub fn diff(capability: &str, pair: &SpecPair) -> CapabilityDiff {
         requirements,
         errors,
         purpose: purpose_diff(pair),
+        unrecognized_sections: pair.delta.unrecognized_sections.clone(),
     }
 }
 
@@ -798,5 +799,31 @@ mod tests {
         let first = diff("cap", &pair).purpose;
         let second = diff("cap", &pair).purpose;
         assert_eq!(first, second);
+    }
+
+    // --- unrecognised sections carried through (unrecognized-spec-sections 2.3) ---
+
+    #[test]
+    fn unrecognised_sections_are_carried_through_unchanged() {
+        let delta_md = "## FIRST BOGUS\n\ntext\n\n\
+            ## ADDED Requirements\n\n\
+            ### Requirement: Foo\n\
+            Intro.\n\n\
+            #### Scenario: A\n\
+            - **WHEN** a\n\
+            - **THEN** a2\n\n\
+            ## SECOND BOGUS\n\ntext\n";
+        let pair = pair_from_markdown(delta_md, None);
+        let result = diff("cap", &pair);
+        assert_eq!(
+            result.unrecognized_sections,
+            vec!["FIRST BOGUS", "SECOND BOGUS"]
+        );
+    }
+
+    #[test]
+    fn no_unrecognised_sections_yields_empty_vec_on_the_diff() {
+        let pair = pair_from_markdown(REQS_ONLY, Some(BASE_REQS));
+        assert!(diff("cap", &pair).unrecognized_sections.is_empty());
     }
 }

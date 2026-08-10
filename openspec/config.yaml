@@ -67,11 +67,18 @@ operations:
   archive:
     guidance:
       - >-
-        Check for source comments that reference "design.md" without naming
-        which archived change it belongs to:
-        `grep -rnE '(^|[^/])design\.md' src/` (intentionally not a lookbehind,
-        for portability). If this change introduced or edited any of the flagged
-        comments, update them before finishing the archive to name this change's
-        own archived directory instead of the bare filename, e.g. replace
-        "design.md" with "`YYYY-MM-DD-this-change-name/design.md`" using the
-        actual directory this change is being archived as.
+        Check for source comments that reference a "design.md" without the
+        full archived directory name (`YYYY-MM-DD-change-name/design.md`).
+        This has two distinct shapes, so one grep alone won't catch both:
+        (1) no directory at all - `grep -rnE '(^|[^/])design\.md' src/`
+        (intentionally not a lookbehind, for portability); (2) a directory
+        that's missing the date prefix, which happens when a comment is
+        written while the change is still active (e.g.
+        `some-change-name/design.md`) and never revisited at archive time -
+        `grep -rnE '/design\.md' src/ | grep -vE '[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-zA-Z0-9_-]+/design\.md'`.
+        If this change introduced or edited any of the flagged comments,
+        update them before finishing the archive to name this change's own
+        archived directory instead, e.g. replace "design.md" or
+        "this-change-name/design.md" with
+        "`YYYY-MM-DD-this-change-name/design.md`" using the actual directory
+        this change is being archived as.
