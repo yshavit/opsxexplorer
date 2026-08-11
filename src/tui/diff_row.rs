@@ -1,9 +1,22 @@
 use std::collections::HashSet;
 use std::mem::discriminant;
 
-use crate::diff::{CapabilityDiff, Operation, Piece, RequirementDiff};
+use crate::diff::{CapabilityDiff, Operation, Piece, RequirementDiff, UnrecognizedSection};
 
 use super::layout;
+
+/// Which document an unrecognised section was parsed from. Carried on the
+/// row key because a capability's two lists are addressed independently: two
+/// sections can share a title, within one list or across the two, so a
+/// section's identity is its position in its own origin's list — the same
+/// reason `RowKey::RemovalNoteLine` is addressed by line index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Origin {
+    /// The change's own delta spec.
+    Delta,
+    /// The capability's spec of record.
+    Base,
+}
 
 /// Identifies a row's collapse state by name rather than by its position in
 /// the flattened list, so the set survives re-flattening when the tree's
@@ -36,8 +49,12 @@ pub enum RowKey {
         requirement: String,
         scenario: String,
     },
-    UnrecognizedSections {
+    /// One unrecognised section, addressed by its index within its own
+    /// origin's list on the capability's diff.
+    UnrecognizedSection {
         capability: String,
+        origin: Origin,
+        index: usize,
     },
 }
 
@@ -97,15 +114,22 @@ pub enum DiffRow<'a> {
         piece: &'a Piece,
     },
     Notice(String),
-    /// A display-only heading introducing the capability's unrecognised
-    /// section titles below it.
-    UnrecognizedSectionsHeading,
-    /// The one content row listing a capability's unrecognised section
-    /// titles: selectable so the cursor's scroll-into-view logic can reach
-    /// it, but not collapsible (see `2026-08-10-unrecognized-spec-sections/design.md`).
-    UnrecognizedSections {
-        titles: &'a [String],
+    /// A display-only heading introducing one origin's run of unrecognised
+    /// sections below it.
+    UnrecognizedSectionsHeading(Origin),
+    /// One unrecognised section, shaped like a `Requirement` row: its title,
+    /// collapsible and collapsed by default, with its body on the
+    /// `UnrecognizedSectionBody` row directly below when expanded.
+    UnrecognizedSection {
+        title: &'a str,
+        expanded: bool,
         key: RowKey,
+    },
+    /// An expanded unrecognised section's body, shown in full and unstyled:
+    /// never excerpted, truncated, or collapsible in its own right (see
+    /// `2026-08-10-unrecognized-sections-in-base/design.md`).
+    UnrecognizedSectionBody {
+        text: &'a str,
     },
 }
 
@@ -119,23 +143,21 @@ impl DiffRow<'_> {
                 | DiffRow::ParagraphFull { .. }
                 | DiffRow::RemovalNoteLine { .. }
                 | DiffRow::RemovalNoteFull { .. }
-                | DiffRow::UnrecognizedSections { .. }
+                | DiffRow::UnrecognizedSection { .. }
         )
     }
 
     /// The collapse-state key for a selectable row, so key-based toggling
     /// doesn't need to re-derive it from surrounding context. `ParagraphFull`
     /// falls through to `None` deliberately: it has nothing to toggle (see
-    /// `2026-08-09-render-purpose/design.md`). `UnrecognizedSections` carries
-    /// a key for the same reason (see `2026-08-10-unrecognized-spec-sections/design.md`),
-    /// despite also having nothing to toggle.
+    /// `2026-08-09-render-purpose/design.md`).
     pub fn key(&self) -> Option<&RowKey> {
         match self {
             DiffRow::Requirement { key, .. }
             | DiffRow::Scenario { key, .. }
             | DiffRow::Paragraph { key, .. }
             | DiffRow::RemovalNoteLine { key, .. }
-            | DiffRow::UnrecognizedSections { key, .. } => Some(key),
+            | DiffRow::UnrecognizedSection { key, .. } => Some(key),
             _ => None,
         }
     }
@@ -145,7 +167,8 @@ impl DiffRow<'_> {
             DiffRow::Requirement { expanded, .. }
             | DiffRow::Scenario { expanded, .. }
             | DiffRow::Paragraph { expanded, .. }
-            | DiffRow::RemovalNoteLine { expanded, .. } => Some(*expanded),
+            | DiffRow::RemovalNoteLine { expanded, .. }
+            | DiffRow::UnrecognizedSection { expanded, .. } => Some(*expanded),
             _ => None,
         }
     }
@@ -183,17 +206,63 @@ pub fn flatten<'a>(
         push_requirement(&mut rows, diff, req, expanded, width);
     }
 
-    if !diff.unrecognized_sections.is_empty() {
-        rows.push(DiffRow::UnrecognizedSectionsHeading);
-        rows.push(DiffRow::UnrecognizedSections {
-            titles: &diff.unrecognized_sections,
-            key: RowKey::UnrecognizedSections {
-                capability: diff.capability.clone(),
-            },
-        });
-    }
+    push_unrecognized_sections(
+        &mut rows,
+        diff,
+        Origin::Delta,
+        &diff.delta_unrecognized_sections,
+        expanded,
+    );
+    push_unrecognized_sections(
+        &mut rows,
+        diff,
+        Origin::Base,
+        &diff.base_unrecognized_sections,
+        expanded,
+    );
 
     rows
+}
+
+/// Pushes one origin's heading and one row per unrecognised section it
+/// carries, or nothing at all when it carries none. The two origins are
+/// pushed in a fixed order (delta's first) rather than one derived from
+/// document position: they come from unrelated documents, so there is no
+/// order between them to derive. Unlike a paragraph or removal-note row,
+/// there's no fits-or-collapses check — an unrecognised section's body is
+/// opaque content with no meaningful shorter excerpt to fall back to, so the
+/// row is always collapsible and expands straight to its full body (see
+/// `2026-08-10-unrecognized-sections-in-base/design.md`).
+fn push_unrecognized_sections<'a>(
+    rows: &mut Vec<DiffRow<'a>>,
+    diff: &'a CapabilityDiff,
+    origin: Origin,
+    sections: &'a [UnrecognizedSection],
+    expanded: &HashSet<RowKey>,
+) {
+    if sections.is_empty() {
+        return;
+    }
+
+    rows.push(DiffRow::UnrecognizedSectionsHeading(origin));
+    for (index, section) in sections.iter().enumerate() {
+        let key = RowKey::UnrecognizedSection {
+            capability: diff.capability.clone(),
+            origin,
+            index,
+        };
+        let section_expanded = expanded.contains(&key);
+        rows.push(DiffRow::UnrecognizedSection {
+            title: &section.title,
+            expanded: section_expanded,
+            key,
+        });
+        if section_expanded {
+            rows.push(DiffRow::UnrecognizedSectionBody {
+                text: &section.body,
+            });
+        }
+    }
 }
 
 /// Extracts a piece's "current text" — the single passage of ordinary text
@@ -396,7 +465,8 @@ mod tests {
             requirements,
             errors: vec![],
             purpose: None,
-            unrecognized_sections: vec![],
+            delta_unrecognized_sections: vec![],
+            base_unrecognized_sections: vec![],
         }
     }
 
@@ -1033,86 +1103,196 @@ mod tests {
         assert_eq!(collapsible.expanded(), Some(false));
     }
 
-    // --- unrecognised sections (unrecognized-spec-sections 3.6) ---
+    // --- unrecognised sections (unrecognized-sections-in-base 3.6) ---
 
-    fn diff_with_unrecognized_sections(titles: Vec<&str>) -> CapabilityDiff {
+    fn sections(titles: Vec<&str>) -> Vec<UnrecognizedSection> {
+        titles
+            .into_iter()
+            .map(|title| UnrecognizedSection {
+                title: title.to_string(),
+                body: format!("body of {title}"),
+            })
+            .collect()
+    }
+
+    fn diff_with_unrecognized_sections(
+        delta_titles: Vec<&str>,
+        base_titles: Vec<&str>,
+    ) -> CapabilityDiff {
         let mut diff = capability_diff(vec![requirement(
             "Req",
             Operation::Added,
             unchanged("intro"),
             vec![],
         )]);
-        diff.unrecognized_sections = titles.into_iter().map(str::to_string).collect();
+        diff.delta_unrecognized_sections = sections(delta_titles);
+        diff.base_unrecognized_sections = sections(base_titles);
         diff
     }
 
+    fn section_key(origin: Origin, index: usize) -> RowKey {
+        RowKey::UnrecognizedSection {
+            capability: "cap".to_string(),
+            origin,
+            index,
+        }
+    }
+
+    fn heading_origins(rows: &[DiffRow]) -> Vec<Origin> {
+        rows.iter()
+            .filter_map(|r| match r {
+                DiffRow::UnrecognizedSectionsHeading(origin) => Some(*origin),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn section_titles<'a>(rows: &[DiffRow<'a>]) -> Vec<&'a str> {
+        rows.iter()
+            .filter_map(|r| match r {
+                DiffRow::UnrecognizedSection { title, .. } => Some(*title),
+                _ => None,
+            })
+            .collect()
+    }
+
     #[test]
-    fn unrecognized_sections_heading_and_row_render_below_requirement_groups() {
-        let diff = diff_with_unrecognized_sections(vec!["Bogus One", "Bogus Two"]);
+    fn delta_sourced_sections_render_under_their_own_heading_below_requirement_groups() {
+        let diff = diff_with_unrecognized_sections(vec!["Bogus One", "Bogus Two"], vec![]);
         let rows = flatten(&diff, &HashSet::new(), WIDE);
 
-        let heading_idx = rows
-            .iter()
-            .position(|r| matches!(r, DiffRow::UnrecognizedSectionsHeading))
-            .expect("expected an UnrecognizedSectionsHeading row");
-        let content_idx = rows
-            .iter()
-            .position(|r| matches!(r, DiffRow::UnrecognizedSections { .. }))
-            .expect("expected an UnrecognizedSections row");
-
-        // Both rows sit at the very end, after every group heading and
-        // requirement row, the content row directly after the heading.
-        assert_eq!(heading_idx, rows.len() - 2);
-        assert_eq!(content_idx, rows.len() - 1);
+        // The heading and its two rows sit at the very end, after every group
+        // heading and requirement row.
         assert!(matches!(rows[0], DiffRow::GroupHeading(Operation::Added)));
+        assert_eq!(
+            rows[rows.len() - 3],
+            DiffRow::UnrecognizedSectionsHeading(Origin::Delta)
+        );
+        assert_eq!(section_titles(&rows), vec!["Bogus One", "Bogus Two"]);
+        assert_eq!(heading_origins(&rows), vec![Origin::Delta]);
+    }
 
-        match &rows[content_idx] {
-            DiffRow::UnrecognizedSections { titles, .. } => {
-                assert_eq!(*titles, ["Bogus One".to_string(), "Bogus Two".to_string()]);
-            }
-            other => panic!("expected UnrecognizedSections, got {other:?}"),
-        }
+    #[test]
+    fn base_sourced_sections_render_under_their_own_heading() {
+        let diff = diff_with_unrecognized_sections(vec![], vec!["From The Base"]);
+        let rows = flatten(&diff, &HashSet::new(), WIDE);
+
+        assert_eq!(heading_origins(&rows), vec![Origin::Base]);
+        assert_eq!(section_titles(&rows), vec!["From The Base"]);
+    }
+
+    #[test]
+    fn both_origins_render_delta_first_then_base() {
+        let diff = diff_with_unrecognized_sections(vec!["Delta One"], vec!["Base One"]);
+        let rows = flatten(&diff, &HashSet::new(), WIDE);
+
+        assert_eq!(heading_origins(&rows), vec![Origin::Delta, Origin::Base]);
+        assert_eq!(section_titles(&rows), vec!["Delta One", "Base One"]);
+
+        let tail = &rows[rows.len() - 4..];
+        assert_eq!(
+            tail,
+            [
+                DiffRow::UnrecognizedSectionsHeading(Origin::Delta),
+                DiffRow::UnrecognizedSection {
+                    title: "Delta One",
+                    expanded: false,
+                    key: section_key(Origin::Delta, 0),
+                },
+                DiffRow::UnrecognizedSectionsHeading(Origin::Base),
+                DiffRow::UnrecognizedSection {
+                    title: "Base One",
+                    expanded: false,
+                    key: section_key(Origin::Base, 0),
+                },
+            ]
+        );
     }
 
     #[test]
     fn no_unrecognized_sections_renders_neither_heading_nor_row() {
-        let diff = diff_with_unrecognized_sections(vec![]);
+        let diff = diff_with_unrecognized_sections(vec![], vec![]);
         let rows = flatten(&diff, &HashSet::new(), WIDE);
+        assert!(heading_origins(&rows).is_empty());
+        assert!(section_titles(&rows).is_empty());
         assert!(
             !rows
                 .iter()
-                .any(|r| matches!(r, DiffRow::UnrecognizedSectionsHeading))
-        );
-        assert!(
-            !rows
-                .iter()
-                .any(|r| matches!(r, DiffRow::UnrecognizedSections { .. }))
+                .any(|r| matches!(r, DiffRow::UnrecognizedSectionBody { .. }))
         );
     }
 
     #[test]
-    fn unrecognized_sections_content_row_is_selectable_with_a_stable_key() {
-        let diff = diff_with_unrecognized_sections(vec!["Bogus"]);
+    fn an_unrecognized_section_row_is_selectable_and_starts_collapsed() {
+        let diff = diff_with_unrecognized_sections(vec!["Bogus"], vec![]);
         let rows = flatten(&diff, &HashSet::new(), WIDE);
-        let content_row = rows
+        let section_row = rows
             .iter()
-            .find(|r| matches!(r, DiffRow::UnrecognizedSections { .. }))
-            .expect("expected an UnrecognizedSections row");
+            .find(|r| matches!(r, DiffRow::UnrecognizedSection { .. }))
+            .expect("expected an UnrecognizedSection row");
 
-        assert!(content_row.is_selectable());
-        assert_eq!(
-            content_row.key(),
-            Some(&RowKey::UnrecognizedSections {
-                capability: "cap".to_string()
-            })
+        assert!(section_row.is_selectable());
+        assert_eq!(section_row.key(), Some(&section_key(Origin::Delta, 0)));
+        assert_eq!(section_row.expanded(), Some(false));
+        // Collapsed: no body row of its own.
+        assert!(
+            !rows
+                .iter()
+                .any(|r| matches!(r, DiffRow::UnrecognizedSectionBody { .. }))
         );
-        assert_eq!(content_row.expanded(), None);
 
         let heading_row = rows
             .iter()
-            .find(|r| matches!(r, DiffRow::UnrecognizedSectionsHeading))
+            .find(|r| matches!(r, DiffRow::UnrecognizedSectionsHeading(_)))
             .expect("expected an UnrecognizedSectionsHeading row");
         assert!(!heading_row.is_selectable());
         assert_eq!(heading_row.key(), None);
+    }
+
+    #[test]
+    fn expanding_a_section_reveals_its_full_body_however_long() {
+        let long_body = "a very long unrecognised body ".repeat(50);
+        let mut diff = diff_with_unrecognized_sections(vec!["Bogus"], vec![]);
+        diff.delta_unrecognized_sections[0].body = long_body.clone();
+
+        let mut expanded = HashSet::new();
+        expanded.insert(section_key(Origin::Delta, 0));
+
+        // Narrow pane: the body is still carried in full, with no
+        // fits-or-collapses check of its own.
+        let rows = flatten(&diff, &expanded, 20);
+        let body_row = rows
+            .iter()
+            .find(|r| matches!(r, DiffRow::UnrecognizedSectionBody { .. }))
+            .expect("expected an UnrecognizedSectionBody row");
+        match body_row {
+            DiffRow::UnrecognizedSectionBody { text } => assert_eq!(*text, long_body),
+            other => panic!("expected UnrecognizedSectionBody, got {other:?}"),
+        }
+        assert!(!body_row.is_selectable());
+        assert_eq!(body_row.expanded(), None);
+    }
+
+    #[test]
+    fn each_section_row_carries_its_own_index_keyed_collapse_state() {
+        // Two sections sharing a title, one per origin: only the index-keyed
+        // row the expanded set names opens.
+        let diff = diff_with_unrecognized_sections(vec!["Same", "Same"], vec!["Same"]);
+        let mut expanded = HashSet::new();
+        expanded.insert(section_key(Origin::Delta, 1));
+
+        let rows = flatten(&diff, &expanded, WIDE);
+        let states: Vec<Option<bool>> = rows
+            .iter()
+            .filter(|r| matches!(r, DiffRow::UnrecognizedSection { .. }))
+            .map(|r| r.expanded())
+            .collect();
+        assert_eq!(states, vec![Some(false), Some(true), Some(false)]);
+        assert_eq!(
+            rows.iter()
+                .filter(|r| matches!(r, DiffRow::UnrecognizedSectionBody { .. }))
+                .count(),
+            1
+        );
     }
 }

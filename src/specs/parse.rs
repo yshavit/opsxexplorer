@@ -13,13 +13,16 @@ use mdq::md_elem::{MdContext, MdDoc, MdElem, ParseOptions};
 use mdq::output::{MdWriter, MdWriterOptions};
 
 use crate::specs::error::{Location, SpecError, StructureErrorKind};
-use crate::specs::model::{Delta, DeltaEntry, DeltaOp, Rename, Requirement, Scenario, Spec};
+use crate::specs::model::{
+    Delta, DeltaEntry, DeltaOp, Rename, Requirement, Scenario, Spec, UnrecognizedSection,
+};
 
 pub(crate) fn parse_spec(path: &Path, text: &str) -> Result<Spec, SpecError> {
     let doc = parse_doc(path, text)?;
 
     let mut purpose = None;
     let mut requirements = Vec::new();
+    let mut unrecognized_sections = Vec::new();
     for section in depth2_sections(&doc.roots) {
         let title = heading_text(&section.title);
         match title.as_str() {
@@ -27,12 +30,16 @@ pub(crate) fn parse_spec(path: &Path, text: &str) -> Result<Spec, SpecError> {
             "Requirements" => {
                 requirements = parse_requirements_section(path, &doc.ctx, &title, &section.body)?;
             }
-            other => return Err(unrecognised_section_error(path, other)),
+            other => unrecognized_sections.push(UnrecognizedSection {
+                title: other.to_string(),
+                body: render_body(&doc.ctx, &section.body),
+            }),
         }
     }
     Ok(Spec {
         purpose,
         requirements,
+        unrecognized_sections,
     })
 }
 
@@ -77,7 +84,10 @@ pub(crate) fn parse_delta(path: &Path, text: &str) -> Result<Delta, SpecError> {
             "RENAMED Requirements" => {
                 renames.extend(parse_renames(path, &title, &section.body)?);
             }
-            other => unrecognized_sections.push(other.to_string()),
+            other => unrecognized_sections.push(UnrecognizedSection {
+                title: other.to_string(),
+                body: render_body(&doc.ctx, &section.body),
+            }),
         }
     }
     Ok(Delta {
@@ -294,17 +304,6 @@ fn flatten_inlines_into(inlines: &[Inline], out: &mut String) {
     }
 }
 
-fn unrecognised_section_error(path: &Path, section: &str) -> SpecError {
-    SpecError::Structure {
-        path: path.to_path_buf(),
-        at: Location {
-            section: section.to_string(),
-            requirement: None,
-        },
-        kind: StructureErrorKind::UnrecognisedOperationSection,
-    }
-}
-
 fn scenario_before_requirement_error(path: &Path, section: &str) -> SpecError {
     SpecError::Structure {
         path: path.to_path_buf(),
@@ -343,6 +342,10 @@ mod tests {
             .iter()
             .map(|e| e.requirement.name.as_str())
             .collect()
+    }
+
+    fn section_titles(sections: &[UnrecognizedSection]) -> Vec<&str> {
+        sections.iter().map(|s| s.title.as_str()).collect()
     }
 
     // --- 4.7: real files ---
@@ -598,7 +601,13 @@ mod tests {
             ## BOGUS Requirements\n\nsome text\n";
         let delta = parse_delta(Path::new("synthetic"), text).unwrap();
         assert_eq!(entry_names(&delta.entries), vec!["Foo"]);
-        assert_eq!(delta.unrecognized_sections, vec!["BOGUS Requirements"]);
+        assert_eq!(
+            delta.unrecognized_sections,
+            vec![UnrecognizedSection {
+                title: "BOGUS Requirements".to_string(),
+                body: "some text".to_string(),
+            }]
+        );
     }
 
     #[test]
@@ -614,7 +623,7 @@ mod tests {
             ## THIRD BOGUS\n\ntext\n";
         let delta = parse_delta(Path::new("synthetic"), text).unwrap();
         assert_eq!(
-            delta.unrecognized_sections,
+            section_titles(&delta.unrecognized_sections),
             vec!["FIRST BOGUS", "SECOND BOGUS", "THIRD BOGUS"]
         );
     }
@@ -632,16 +641,66 @@ mod tests {
     }
 
     #[test]
-    fn unrecognised_operation_section_is_reported_for_spec_of_record() {
-        let text = "## BOGUS\n\nsome text\n";
-        let err = parse_spec(Path::new("synthetic"), text).unwrap_err();
-        assert!(matches!(
-            err,
-            SpecError::Structure {
-                kind: StructureErrorKind::UnrecognisedOperationSection,
-                ..
-            }
-        ));
+    fn unrecognised_section_in_a_spec_of_record_is_collected_and_parsing_continues() {
+        let text = "## Why\n\nBecause reasons.\n\n\
+            ## Requirements\n\n\
+            ### Requirement: Foo\n\
+            Intro.\n\n\
+            #### Scenario: A\n\
+            - **WHEN** a\n\
+            - **THEN** a2\n\n\
+            ## BOGUS\n\nsome text\n";
+        let spec = parse_spec(Path::new("synthetic"), text).unwrap();
+        // The recognised sections around it still parse.
+        assert_eq!(req_names(&spec.requirements), vec!["Foo"]);
+        assert_eq!(
+            spec.unrecognized_sections,
+            vec![
+                UnrecognizedSection {
+                    title: "Why".to_string(),
+                    body: "Because reasons.".to_string(),
+                },
+                UnrecognizedSection {
+                    title: "BOGUS".to_string(),
+                    body: "some text".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn no_unrecognised_sections_in_a_spec_of_record_yields_empty_vec() {
+        let text = "## Requirements\n\n\
+            ### Requirement: Foo\n\
+            Intro.\n";
+        let spec = parse_spec(Path::new("synthetic"), text).unwrap();
+        assert!(spec.unrecognized_sections.is_empty());
+    }
+
+    #[test]
+    fn an_unrecognised_sections_body_is_the_same_rendered_body_a_requirement_intro_gets() {
+        // The same rich block content on both sides: once as an unrecognised
+        // section's body, once as a requirement's intro. Both go through
+        // `render_body`, so the two must come back identical.
+        let content = "First paragraph with `code` and **bold**.\n\n\
+            - a bullet\n\
+            - another bullet\n\n\
+            ```text\n\
+            fn example() {}\n\
+            ```";
+
+        let delta_text = format!("## BOGUS\n\n{content}\n");
+        let delta = parse_delta(Path::new("synthetic"), &delta_text).unwrap();
+
+        let spec_text = format!("## BOGUS\n\n{content}\n");
+        let spec = parse_spec(Path::new("synthetic"), &spec_text).unwrap();
+
+        let intro_text = format!("## Requirements\n\n### Requirement: Foo\n{content}\n");
+        let intro_spec = parse_spec(Path::new("synthetic"), &intro_text).unwrap();
+        let intro = &intro_spec.requirements[0].intro;
+
+        assert_eq!(&delta.unrecognized_sections[0].body, intro);
+        assert_eq!(&spec.unrecognized_sections[0].body, intro);
     }
 
     #[test]

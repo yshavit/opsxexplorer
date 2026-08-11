@@ -307,13 +307,21 @@ The system SHALL report a purpose comparison only for two outcomes: an insertion
 - **WHEN** the same delta and spec of record are compared twice
 - **THEN** the purpose comparison, or its absence, is the same both times
 
-### Requirement: A capability's diff carries the delta's unrecognised sections through
-The comparison the system produces for a capability SHALL carry the same unrecognised section titles its delta was parsed with, unchanged and in the same order, so that a capability's diff is a superset of everything the pane needs to render it — including content the tool did not understand well enough to diff. The system SHALL NOT interpret, validate, or otherwise act on an unrecognised section title beyond carrying it through.
+### Requirement: A capability's diff carries its unrecognised sections through, kept separate by origin
+The comparison the system produces for a capability SHALL carry the unrecognised sections its delta was parsed with and the unrecognised sections its spec of record was parsed with as two separate ordered lists — never merged into one — each preserving the order its own document carried them in, and each entry carrying both the section's title and its body. This makes a capability's diff a superset of everything the pane needs to render it, including content the tool did not understand well enough to diff, while still letting a consumer tell a section that came from the change itself apart from one that was already sitting in the spec of record. When a capability has no spec of record at all, its base-sourced list SHALL be empty. The system SHALL NOT interpret, validate, or otherwise act on an unrecognised section beyond carrying it through.
 
 #### Scenario: delta with unrecognised sections
-- **WHEN** a capability's delta was parsed with one or more unrecognised section titles
-- **THEN** the capability's diff carries those same titles, in the same order
+- **WHEN** a capability's delta was parsed with one or more unrecognised sections
+- **THEN** the capability's diff carries those same sections, in the same order, in its delta-sourced list
+
+#### Scenario: spec of record with unrecognised sections
+- **WHEN** a capability's spec of record was parsed with one or more unrecognised sections
+- **THEN** the capability's diff carries those same sections, in the same order, in its base-sourced list
 
 #### Scenario: delta with no unrecognised sections
-- **WHEN** a capability's delta was parsed with no unrecognised section titles
-- **THEN** the capability's diff carries none either
+- **WHEN** a capability's delta was parsed with no unrecognised sections
+- **THEN** its delta-sourced list is empty
+
+#### Scenario: no spec of record at all
+- **WHEN** a capability has no spec of record to compare against
+- **THEN** its base-sourced list is empty

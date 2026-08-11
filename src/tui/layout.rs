@@ -199,9 +199,9 @@ fn indent_depth(row: &DiffRow) -> usize {
         | DiffRow::PurposeHeading(_)
         | DiffRow::Requirement { .. }
         | DiffRow::Notice(_)
-        | DiffRow::UnrecognizedSectionsHeading
-        | DiffRow::UnrecognizedSections { .. } => 0,
-        DiffRow::Scenario { .. } => 1,
+        | DiffRow::UnrecognizedSectionsHeading(_)
+        | DiffRow::UnrecognizedSection { .. } => 0,
+        DiffRow::Scenario { .. } | DiffRow::UnrecognizedSectionBody { .. } => 1,
         DiffRow::Body { .. } => 2,
     }
 }
@@ -212,8 +212,9 @@ fn gutter_marker(row: &DiffRow) -> (&'static str, Style) {
         | DiffRow::PurposeHeading(_)
         | DiffRow::Body { .. }
         | DiffRow::Notice(_)
-        | DiffRow::UnrecognizedSectionsHeading
-        | DiffRow::UnrecognizedSections { .. } => (" ", Style::default()),
+        | DiffRow::UnrecognizedSectionsHeading(_)
+        | DiffRow::UnrecognizedSection { .. }
+        | DiffRow::UnrecognizedSectionBody { .. } => (" ", Style::default()),
         DiffRow::Requirement { op, .. } => requirement_marker(op),
         DiffRow::Scenario { body, .. } => piece_marker(body),
         DiffRow::ParagraphFull { piece, .. } => piece_marker(piece),
@@ -349,10 +350,21 @@ fn content_spans(row: &DiffRow) -> Vec<Span<'static>> {
         // Display-only; always rendered through `purpose_heading_box`
         // instead (see `build_diff_lines`), never through this path.
         DiffRow::PurposeHeading(_) => vec![],
-        // Both always rendered through the `unrecognized_sections_*`
-        // functions instead (see `build_diff_lines`), never through this
-        // path.
-        DiffRow::UnrecognizedSectionsHeading | DiffRow::UnrecognizedSections { .. } => vec![],
+        // Display-only; always rendered through
+        // `unrecognized_sections_heading` instead (see `build_diff_lines`),
+        // never through this path.
+        DiffRow::UnrecognizedSectionsHeading(_) => vec![],
+        // The title carries no colour of its own: the heading above it
+        // already says which origin the section came from, and the section's
+        // own text is content the tool didn't interpret (see
+        // `2026-08-10-unrecognized-sections-in-base/design.md`).
+        DiffRow::UnrecognizedSection {
+            title, expanded, ..
+        } => vec![
+            Span::raw(expand_arrow(*expanded)),
+            Span::raw((*title).to_string()),
+        ],
+        DiffRow::UnrecognizedSectionBody { text } => vec![Span::raw((*text).to_string())],
         DiffRow::ParagraphFull { piece, .. } => {
             let (_, marker_style) = piece_marker(piece);
             let mut spans = vec![Span::styled("¶", marker_style), Span::raw(" ")];

@@ -19,11 +19,25 @@ pub struct Requirement {
     pub scenarios: Vec<Scenario>,
 }
 
+/// A `##` section the parser did not recognise, carried through with enough
+/// of itself — title *and* rendered body — that a consumer can show what the
+/// tool skipped rather than only that something was skipped. Produced
+/// identically by both parsers; see
+/// `2026-08-10-unrecognized-spec-sections/design.md` and
+/// `2026-08-10-unrecognized-sections-in-base/design.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnrecognizedSection {
+    pub title: String,
+    pub body: String,
+}
+
 /// A capability's spec of record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Spec {
     pub purpose: Option<String>,
     pub requirements: Vec<Requirement>,
+    /// `##` sections the parser did not recognise, in document order.
+    pub unrecognized_sections: Vec<UnrecognizedSection>,
 }
 
 /// The operation section a delta requirement was parsed from.
@@ -66,9 +80,9 @@ pub struct Delta {
     pub purpose: Option<String>,
     pub entries: Vec<DeltaEntry>,
     pub renames: Vec<Rename>,
-    /// Titles of `##` sections the parser did not recognise, in document
-    /// order. See `2026-08-10-unrecognized-spec-sections/design.md`.
-    pub unrecognized_sections: Vec<String>,
+    /// `##` sections the parser did not recognise, in document order. See
+    /// `2026-08-10-unrecognized-spec-sections/design.md`.
+    pub unrecognized_sections: Vec<UnrecognizedSection>,
 }
 
 /// Both sides of a change-and-capability pair, as loaded by [`crate::specs::load`].
