@@ -127,7 +127,7 @@ pub fn diff(capability: &str, pair: &SpecPair) -> CapabilityDiff {
                 requirements.push(RequirementDiff {
                     name: to.to_string(),
                     op: Operation::Renamed {
-                        from: from.to_string(),
+                        title: compare::changed_or_unchanged(from, to),
                     },
                     intro,
                     scenarios,
@@ -281,7 +281,7 @@ mod tests {
                     note: String::new()
                 },
                 &Operation::Renamed {
-                    from: "Old Name".to_string()
+                    title: compare::changed_or_unchanged("Old Name", "New Name")
                 },
             ]
         );

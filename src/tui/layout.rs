@@ -74,6 +74,14 @@ pub fn row_lines(row: &DiffRow, width: usize) -> Vec<Line<'static>> {
         return collapsed_removal_note_lines(text, width, *indent);
     }
 
+    if let DiffRow::Requirement { op, expanded, .. } = row
+        && let Operation::Renamed {
+            title: Piece::Replaced { base, delta },
+        } = op
+    {
+        return renamed_replacement_lines(op, *expanded, base, delta, width);
+    }
+
     let (marker, marker_style) = gutter_marker(row);
     let indent = indent_depth(row) * INDENT_UNIT;
     let available = width.saturating_sub(GUTTER_WIDTH + indent).max(1);
@@ -91,6 +99,58 @@ pub fn row_lines(row: &DiffRow, width: usize) -> Vec<Line<'static>> {
                 line_spans.push(Span::raw(" "));
             } else {
                 line_spans.push(Span::raw(" ".repeat(GUTTER_WIDTH)));
+            }
+            line_spans.extend(spans);
+            Line::from(line_spans)
+        })
+        .collect()
+}
+
+/// Renders a renamed requirement's row when its name comparison is a
+/// wholesale replacement: the former name (deletion-styled) then the new
+/// name (insertion-styled), each starting on its own line. Every line after
+/// the first — including a continuation line from either name wrapping on
+/// its own — is indented to align beneath where the first line's own text
+/// began (past the marker, the disclosure triangle and `REQ `), not just
+/// beneath the gutter, so the two names read as one aligned block rather
+/// than a ragged wrap.
+fn renamed_replacement_lines(
+    op: &Operation,
+    expanded: bool,
+    base: &str,
+    delta: &str,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let (marker, marker_style) = requirement_marker(op);
+    let prefix: Vec<Span<'static>> = vec![
+        Span::raw(expand_arrow(expanded)),
+        Span::styled("REQ", operation_style(op)),
+        Span::raw(" "),
+    ];
+    let prefix_width: usize = prefix.iter().flat_map(|s| s.content.chars()).count();
+    let available = width.saturating_sub(GUTTER_WIDTH + prefix_width).max(1);
+
+    let wrapped_base = wrap_spans(
+        vec![Span::styled(base.to_string(), removed_text_style())],
+        available,
+    );
+    let wrapped_delta = wrap_spans(
+        vec![Span::styled(delta.to_string(), added_style())],
+        available,
+    );
+
+    wrapped_base
+        .into_iter()
+        .chain(wrapped_delta)
+        .enumerate()
+        .map(|(i, spans)| {
+            let mut line_spans = Vec::with_capacity(spans.len() + prefix.len() + 2);
+            if i == 0 {
+                line_spans.push(Span::styled(marker, marker_style));
+                line_spans.push(Span::raw(" "));
+                line_spans.extend(prefix.clone());
+            } else {
+                line_spans.push(Span::raw(" ".repeat(GUTTER_WIDTH + prefix_width)));
             }
             line_spans.extend(spans);
             Line::from(line_spans)
@@ -319,14 +379,7 @@ fn content_spans(row: &DiffRow) -> Vec<Span<'static>> {
                 Span::raw(" "),
             ];
             match op {
-                Operation::Renamed { from } => {
-                    spans.push(Span::styled(
-                        from.clone(),
-                        Style::new().add_modifier(Modifier::DIM),
-                    ));
-                    spans.push(Span::styled(" → ", modified_style()));
-                    spans.push(Span::styled((*name).to_string(), operation_style(op)));
-                }
+                Operation::Renamed { title } => spans.extend(piece_spans(title)),
                 _ => spans.push(Span::styled((*name).to_string(), operation_style(op))),
             }
             spans
@@ -595,7 +648,9 @@ mod tests {
         );
         assert_eq!(
             requirement_marker(&Operation::Renamed {
-                from: "x".to_string()
+                title: Piece::Unchanged {
+                    text: "x".to_string()
+                }
             })
             .0,
             "»"
@@ -609,7 +664,9 @@ mod tests {
             })
             .0,
             requirement_marker(&Operation::Renamed {
-                from: "x".to_string(),
+                title: Piece::Unchanged {
+                    text: "x".to_string(),
+                },
             })
             .0,
         ];
@@ -927,54 +984,192 @@ mod tests {
         assert!(text.contains("Some Requirement"));
     }
 
+    /// `"Old Name"` -> `"New Name"`: shared suffix `" Name"` (bytes 3..8 on
+    /// both sides), differing prefix `"Old"`/`"New"` (bytes 0..3).
+    fn old_name_to_new_name_runs() -> Vec<Run> {
+        vec![
+            Run::Delete { base: 0..3 },
+            Run::Insert { delta: 0..3 },
+            Run::Equal {
+                base: 3..8,
+                delta: 3..8,
+            },
+        ]
+    }
+
     #[test]
-    fn renamed_requirement_shows_both_names() {
+    fn renamed_requirement_with_similar_names_renders_as_one_inline_word_diff() {
+        let title = Piece::Changed {
+            base: "Old Name".to_string(),
+            delta: "New Name".to_string(),
+            runs: old_name_to_new_name_runs(),
+        };
         let row = DiffRow::Requirement {
             name: "New Name",
-            op: &Operation::Renamed {
-                from: "Old Name".to_string(),
-            },
+            op: &Operation::Renamed { title },
             expanded: false,
             key: dummy_key("New Name"),
         };
         let lines = row_lines(&row, 60);
-        let text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(text.contains("Old Name"));
-        assert!(text.contains("New Name"));
+
+        // One reflowed passage, not two stacked lines.
+        assert_eq!(lines.len(), 1);
+
+        let spans = &lines[0].spans;
+        let deleted: String = spans
+            .iter()
+            .filter(|s| s.style == removed_text_style())
+            .map(|s| s.content.as_ref())
+            .collect();
+        let inserted: String = spans
+            .iter()
+            .filter(|s| s.style == added_style())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(deleted, "Old");
+        assert_eq!(inserted, "New");
+
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("REQ"));
+        assert!(text.contains(" Name"));
     }
 
     #[test]
-    fn renamed_requirement_dims_the_old_name_and_colors_the_arrow_and_new_name_like_modified() {
+    fn renamed_requirement_with_dissimilar_names_renders_as_stacked_before_and_after() {
+        let title = Piece::Replaced {
+            base: "Totally Different Old Title".to_string(),
+            delta: "Completely Unrelated New Title".to_string(),
+        };
+        let row = DiffRow::Requirement {
+            name: "Completely Unrelated New Title",
+            op: &Operation::Renamed { title },
+            expanded: false,
+            key: dummy_key("Completely Unrelated New Title"),
+        };
+        let lines = row_lines(&row, 60);
+        assert_eq!(lines.len(), 2, "expected the two names on separate lines");
+
+        let first: String = lines[0]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        let second: String = lines[1]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(first.contains("Totally Different Old Title"));
+        assert!(second.contains("Completely Unrelated New Title"));
+
+        assert!(
+            lines[0]
+                .spans
+                .iter()
+                .any(|s| s.style == removed_text_style() && s.content.contains("Totally"))
+        );
+        assert!(
+            lines[1]
+                .spans
+                .iter()
+                .any(|s| s.style == added_style() && s.content.contains("Completely"))
+        );
+
+        // The second line is indented to align beneath the first line's own
+        // text (right after the marker, disclosure triangle and "REQ "),
+        // not just beneath the gutter.
+        let first_text_start_chars: usize = lines[0]
+            .spans
+            .iter()
+            .take_while(|s| !s.content.contains("Totally"))
+            .flat_map(|s| s.content.chars())
+            .count();
+        let second_line_blank_prefix = &lines[1].spans[0];
+        assert_eq!(
+            second_line_blank_prefix.content.chars().count(),
+            first_text_start_chars
+        );
+        assert!(second_line_blank_prefix.content.chars().all(|c| c == ' '));
+        assert!(second.trim_start().starts_with("Completely"));
+    }
+
+    #[test]
+    fn renamed_requirement_replacement_indents_every_line_after_the_first() {
+        // Long enough on both sides that each name wraps onto more than one
+        // line of its own, not just at the base/delta boundary.
+        let title = Piece::Replaced {
+            base: "one two three four five six seven eight nine ten".to_string(),
+            delta: "eleven twelve thirteen fourteen fifteen sixteen".to_string(),
+        };
+        let row = DiffRow::Requirement {
+            name: "irrelevant",
+            op: &Operation::Renamed { title },
+            expanded: false,
+            key: dummy_key("irrelevant"),
+        };
+        let lines = row_lines(&row, 20);
+        assert!(
+            lines.len() > 2,
+            "expected each name to wrap onto more than one line of its own"
+        );
+
+        let expected_prefix_len = lines[0]
+            .spans
+            .iter()
+            .take_while(|s| !s.content.contains("one"))
+            .flat_map(|s| s.content.chars())
+            .count();
+        for line in &lines[1..] {
+            let prefix: String = line
+                .spans
+                .iter()
+                .flat_map(|s| s.content.chars())
+                .take(expected_prefix_len)
+                .collect();
+            assert_eq!(
+                prefix,
+                " ".repeat(expected_prefix_len),
+                "every line after the first should be indented to align under the first line's own text"
+            );
+        }
+    }
+
+    #[test]
+    fn renamed_requirement_wraps_a_long_name_instead_of_collapsing() {
+        let title = Piece::Changed {
+            base: "Old Name".to_string(),
+            delta: "New Name".to_string(),
+            runs: old_name_to_new_name_runs(),
+        };
         let row = DiffRow::Requirement {
             name: "New Name",
-            op: &Operation::Renamed {
-                from: "Old Name".to_string(),
-            },
+            op: &Operation::Renamed { title },
             expanded: false,
             key: dummy_key("New Name"),
         };
-        let spans = &row_lines(&row, 60)[0].spans;
+        let lines = row_lines(&row, 8);
 
-        let old_name = spans
-            .iter()
-            .find(|s| s.content.as_ref() == "Old Name")
-            .expect("expected a span exactly matching the old name");
-        assert!(old_name.style.add_modifier.contains(Modifier::DIM));
-
-        // The arrow and the new name now share `modified_style()`, so
-        // `chars_to_spans` coalesces them into one span rather than keeping
-        // them separate.
-        let arrow_and_new_name = spans
-            .iter()
-            .find(|s| s.content.as_ref() == " → New Name")
-            .expect("expected the arrow and new name merged into one span");
         assert!(
-            !arrow_and_new_name
-                .style
-                .add_modifier
-                .contains(Modifier::DIM)
+            lines.len() > 1,
+            "expected a narrow pane to wrap the rename across lines, not truncate it"
         );
-        assert_eq!(arrow_and_new_name.style, modified_style());
+        let text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            !text.contains('…'),
+            "a renamed requirement's title has no collapse/ellipsis form of its own"
+        );
+        assert!(text.contains("Old"));
+        assert!(text.contains("New"));
+
+        // Continuation lines carry no gutter marker, matching every other
+        // row that wraps (see "continuation lines are aligned and
+        // ungutter-marked" in the tui-specdiff spec).
+        let second_line_start: String = lines[1].spans[0].content.to_string();
+        assert!(second_line_start.chars().all(|c| c == ' '));
     }
 
     #[test]

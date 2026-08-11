@@ -62,11 +62,15 @@ pub enum Operation {
     Added,
     Modified,
     Removed { note: String },
-    Renamed { from: String },
+    /// `title` compares the former name against the new name, using the same
+    /// changed-vs-replaced judgement as any other piece (see
+    /// `compare::changed_or_unchanged`), so it renders through the same path
+    /// as any other compared text.
+    Renamed { title: Piece },
 }
 
 /// `name` is always the display name: for a rename that is the new name,
-/// with the former name carried on `Operation::Renamed`.
+/// with the former name carried on `Operation::Renamed`'s `title` piece.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequirementDiff {
     pub name: String,
