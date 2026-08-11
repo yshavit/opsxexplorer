@@ -209,7 +209,7 @@ fn render_diff_tabs(
         for line in &mut lines[start..end] {
             line.style = line
                 .style
-                .patch(Style::new().add_modifier(Modifier::REVERSED));
+                .patch(Style::new().add_modifier(Modifier::UNDERLINED));
         }
     }
 
