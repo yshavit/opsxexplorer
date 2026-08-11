@@ -23,8 +23,8 @@ pub struct Requirement {
 /// of itself — title *and* rendered body — that a consumer can show what the
 /// tool skipped rather than only that something was skipped. Produced
 /// identically by both parsers; see
-/// `2026-08-10-unrecognized-spec-sections/design.md` and this change's own
-/// design.md.
+/// `2026-08-10-unrecognized-spec-sections/design.md` and
+/// `2026-08-10-unrecognized-sections-in-base/design.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnrecognizedSection {
     pub title: String,

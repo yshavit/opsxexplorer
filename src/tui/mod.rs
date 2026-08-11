@@ -486,7 +486,7 @@ const BASE_UNRECOGNIZED_SECTIONS_QUALIFIER: &str = "(in the spec of record, not 
 /// the base-sourced heading is unstyled and qualifies its label with an
 /// italic parenthetical, since content the delta doesn't mention is
 /// preserved as-is by the project's own sync tooling and so warrants no
-/// call-out (see `unrecognized-sections-in-base/design.md`).
+/// call-out (see `2026-08-10-unrecognized-sections-in-base/design.md`).
 fn unrecognized_sections_heading(origin: Origin, width: usize) -> Vec<Line<'static>> {
     let (style, qualifier) = match origin {
         Origin::Delta => (layout::unrecognised_style(), None),
@@ -510,7 +510,7 @@ fn heading_box(label: &str, style: Style, width: usize) -> Vec<Line<'static>> {
 /// under it, so it counts toward the width the box needs: a qualified
 /// heading degrades to a plain line — label and qualifier together, still on
 /// one line — at a wider pane than the same heading without one (see
-/// `unrecognized-sections-in-base/design.md`).
+/// `2026-08-10-unrecognized-sections-in-base/design.md`).
 fn heading_box_qualified(
     label: &str,
     qualifier: Option<&str>,

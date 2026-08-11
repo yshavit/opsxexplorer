@@ -90,6 +90,7 @@ pub struct CapabilityDiff {
     /// through the same way. Kept separate from the delta's rather than
     /// merged: the two come from different documents and mean different
     /// things to a reader, so the render layer needs to tell them apart
-    /// without re-deriving the origin (see this change's design.md).
+    /// without re-deriving the origin (see
+    /// `2026-08-10-unrecognized-sections-in-base/design.md`).
     pub base_unrecognized_sections: Vec<UnrecognizedSection>,
 }

@@ -357,7 +357,7 @@ fn content_spans(row: &DiffRow) -> Vec<Span<'static>> {
         // The title carries no colour of its own: the heading above it
         // already says which origin the section came from, and the section's
         // own text is content the tool didn't interpret (see
-        // `unrecognized-sections-in-base/design.md`).
+        // `2026-08-10-unrecognized-sections-in-base/design.md`).
         DiffRow::UnrecognizedSection {
             title, expanded, ..
         } => vec![

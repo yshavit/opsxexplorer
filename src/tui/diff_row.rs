@@ -127,7 +127,7 @@ pub enum DiffRow<'a> {
     },
     /// An expanded unrecognised section's body, shown in full and unstyled:
     /// never excerpted, truncated, or collapsible in its own right (see
-    /// `unrecognized-sections-in-base/design.md`).
+    /// `2026-08-10-unrecognized-sections-in-base/design.md`).
     UnrecognizedSectionBody {
         text: &'a str,
     },
@@ -232,7 +232,7 @@ pub fn flatten<'a>(
 /// there's no fits-or-collapses check — an unrecognised section's body is
 /// opaque content with no meaningful shorter excerpt to fall back to, so the
 /// row is always collapsible and expands straight to its full body (see
-/// `unrecognized-sections-in-base/design.md`).
+/// `2026-08-10-unrecognized-sections-in-base/design.md`).
 fn push_unrecognized_sections<'a>(
     rows: &mut Vec<DiffRow<'a>>,
     diff: &'a CapabilityDiff,
