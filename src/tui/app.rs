@@ -588,7 +588,9 @@ fn archived_header_index(rows: &[Row]) -> Option<usize> {
 mod tests {
     use super::*;
     use crate::changes::Change;
-    use crate::diff::{DiffError, Operation, Piece, RequirementDiff, ScenarioDiff};
+    use crate::diff::{
+        DiffError, Operation, Piece, RequirementDiff, ScenarioDiff, UnrecognizedSection,
+    };
     use crossterm::event::KeyModifiers;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -778,7 +780,8 @@ mod tests {
             }],
             errors: vec![],
             purpose: None,
-            unrecognized_sections: vec![],
+            delta_unrecognized_sections: vec![],
+            base_unrecognized_sections: vec![],
         }
     }
 
@@ -1392,81 +1395,114 @@ mod tests {
         ));
     }
 
-    // --- unrecognised-sections row wiring (unrecognized-spec-sections 3.6) ---
+    // --- unrecognised-sections row wiring (unrecognized-sections-in-base 3.6) ---
 
-    fn diff_with_unrecognized_sections(capability: &str, titles: Vec<&str>) -> CapabilityDiff {
+    fn unrecognized(titles: Vec<&str>) -> Vec<UnrecognizedSection> {
+        titles
+            .into_iter()
+            .map(|title| UnrecognizedSection {
+                title: title.to_string(),
+                body: format!("body of {title}"),
+            })
+            .collect()
+    }
+
+    fn diff_with_unrecognized_sections(
+        capability: &str,
+        delta_titles: Vec<&str>,
+        base_titles: Vec<&str>,
+    ) -> CapabilityDiff {
         let mut diff = sample_diff(capability);
-        diff.unrecognized_sections = titles.into_iter().map(str::to_string).collect();
+        diff.delta_unrecognized_sections = unrecognized(delta_titles);
+        diff.base_unrecognized_sections = unrecognized(base_titles);
         diff
     }
 
-    #[test]
-    fn cursor_skips_the_unrecognized_sections_heading_and_stops_on_the_content_row() {
-        let diff = diff_with_unrecognized_sections("cap", vec!["Bogus Section"]);
-        let mut app = app_with_loaded(vec![("cap", diff)]);
-        app.focus = Focus::Right;
-        app.set_right_pane_width(200);
-
-        let rows = app.diff_rows();
-        let heading_idx = rows
-            .iter()
-            .position(|r| matches!(r, DiffRow::UnrecognizedSectionsHeading))
-            .expect("expected an UnrecognizedSectionsHeading row");
-        let content_idx = rows
-            .iter()
-            .position(|r| matches!(r, DiffRow::UnrecognizedSections { .. }))
-            .expect("expected an UnrecognizedSections row");
-        assert_eq!(content_idx, heading_idx + 1);
-
-        // Move the cursor all the way to the bottom: it should land on the
-        // content row, never on the heading.
-        for _ in 0..rows.len() {
-            app.handle_key(key(KeyCode::Char('j')));
-        }
-        assert_eq!(app.cursor, content_idx);
-        assert!(matches!(
-            app.diff_rows()[app.cursor],
-            DiffRow::UnrecognizedSections { .. }
-        ));
+    fn section_indices(rows: &[DiffRow]) -> Vec<usize> {
+        rows.iter()
+            .enumerate()
+            .filter(|(_, r)| matches!(r, DiffRow::UnrecognizedSection { .. }))
+            .map(|(i, _)| i)
+            .collect()
     }
 
     #[test]
-    fn toggle_keys_on_the_unrecognized_sections_row_are_inert() {
-        let diff = diff_with_unrecognized_sections("cap", vec!["Bogus Section"]);
+    fn cursor_skips_both_headings_and_stops_on_every_section_row() {
+        let diff = diff_with_unrecognized_sections("cap", vec!["Delta One"], vec!["Base One"]);
         let mut app = app_with_loaded(vec![("cap", diff)]);
         app.focus = Focus::Right;
         app.set_right_pane_width(200);
 
         let rows = app.diff_rows();
-        let content_idx = rows
+        let heading_indices: Vec<usize> = rows
             .iter()
-            .position(|r| matches!(r, DiffRow::UnrecognizedSections { .. }))
-            .expect("expected an UnrecognizedSections row");
-        app.cursor = content_idx;
+            .enumerate()
+            .filter(|(_, r)| matches!(r, DiffRow::UnrecognizedSectionsHeading(_)))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(heading_indices.len(), 2);
+        let section_indices = section_indices(&rows);
+        assert_eq!(section_indices.len(), 2);
 
-        let cursor_before = app.cursor;
-        let expanded_before = app.expanded.clone();
-
-        for code in [
-            KeyCode::Enter,
-            KeyCode::Char(' '),
-            KeyCode::Char('l'),
-            KeyCode::Char('h'),
-        ] {
-            app.handle_key(key(code));
+        // Walk the cursor down through every row: it stops on each section
+        // row in turn and never on either heading.
+        let mut visited = Vec::new();
+        for _ in 0..rows.len() {
+            app.handle_key(key(KeyCode::Char('j')));
+            visited.push(app.cursor);
         }
+        for heading_idx in heading_indices {
+            assert!(
+                !visited.contains(&heading_idx),
+                "cursor stopped on the heading at {heading_idx}"
+            );
+        }
+        for section_idx in &section_indices {
+            assert!(
+                visited.contains(section_idx),
+                "cursor never reached the section row at {section_idx}"
+            );
+        }
+        assert_eq!(app.cursor, *section_indices.last().unwrap());
+    }
 
-        assert_eq!(app.cursor, cursor_before);
-        assert_eq!(app.expanded, expanded_before);
-        assert_eq!(
-            app.diff_rows()[app.cursor].expanded(),
-            None,
-            "the content row has no collapsed/expanded state"
+    #[test]
+    fn toggle_keys_expand_and_collapse_an_unrecognized_section_row() {
+        let diff = diff_with_unrecognized_sections("cap", vec![], vec!["Base One"]);
+        let mut app = app_with_loaded(vec![("cap", diff)]);
+        app.focus = Focus::Right;
+        app.set_right_pane_width(200);
+
+        app.cursor = section_indices(&app.diff_rows())[0];
+        assert_eq!(app.diff_rows()[app.cursor].expanded(), Some(false));
+
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(app.diff_rows()[app.cursor].expanded(), Some(true));
+        assert!(
+            app.diff_rows()
+                .iter()
+                .any(|r| matches!(r, DiffRow::UnrecognizedSectionBody { .. })),
+            "expanding a section should reveal its body row"
+        );
+
+        app.handle_key(key(KeyCode::Char(' ')));
+        assert_eq!(app.diff_rows()[app.cursor].expanded(), Some(false));
+
+        app.handle_key(key(KeyCode::Char('l')));
+        assert_eq!(app.diff_rows()[app.cursor].expanded(), Some(true));
+
+        app.handle_key(key(KeyCode::Char('h')));
+        assert_eq!(app.diff_rows()[app.cursor].expanded(), Some(false));
+        assert!(
+            !app.diff_rows()
+                .iter()
+                .any(|r| matches!(r, DiffRow::UnrecognizedSectionBody { .. })),
+            "collapsing a section should hide its body row again"
         );
     }
 
     #[test]
-    fn ctrl_d_can_scroll_the_cursor_onto_the_unrecognized_sections_row() {
+    fn ctrl_d_can_scroll_the_cursor_onto_an_unrecognized_section_row() {
         let mut diff = sample_diff("cap");
         diff.requirements = (0..20)
             .map(|i| RequirementDiff {
@@ -1476,27 +1512,30 @@ mod tests {
                 scenarios: vec![],
             })
             .collect();
-        diff.unrecognized_sections = vec!["Bogus Section".to_string()];
+        diff.base_unrecognized_sections = unrecognized(vec!["Bogus Section"]);
         let mut app = app_with_loaded(vec![("cap", diff)]);
         app.focus = Focus::Right;
         app.set_right_viewport_rows(10);
 
         let rows = app.diff_rows();
-        let content_idx = rows
-            .iter()
-            .position(|r| matches!(r, DiffRow::UnrecognizedSections { .. }))
-            .expect("expected an UnrecognizedSections row");
-        let last = rows.len() - 1;
+        let section_idx = section_indices(&rows)[0];
         assert_eq!(
-            content_idx, last,
-            "the content row should be the last selectable row"
+            section_idx,
+            rows.len() - 1,
+            "the section row should be the last selectable row"
         );
 
         // Far more than enough Ctrl+d presses to reach the bottom from the top.
         for _ in 0..10 {
             app.handle_key(ctrl_key(KeyCode::Char('d')));
         }
-        assert_eq!(app.cursor, content_idx);
+        assert_eq!(app.cursor, section_idx);
+
+        // And Ctrl+u brings it back up again.
+        for _ in 0..10 {
+            app.handle_key(ctrl_key(KeyCode::Char('u')));
+        }
+        assert!(app.cursor < section_idx);
     }
 
     // --- left pane: Enter/Space focus-shift ---

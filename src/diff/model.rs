@@ -1,6 +1,7 @@
 use std::ops::Range;
 
 use crate::diff::error::DiffError;
+use crate::specs::UnrecognizedSection;
 
 /// A span of text marked as unchanged, deleted or inserted. Offsets are byte
 /// ranges into the two body strings `spec-model` supplied, never into the
@@ -82,8 +83,13 @@ pub struct CapabilityDiff {
     /// The capability's purpose comparison, if there is anything to report:
     /// only ever `Added`, `Changed` or `Replaced` (see `diff()`).
     pub purpose: Option<Piece>,
-    /// Titles of `##` sections the delta's parser did not recognise, carried
-    /// through unchanged and in the same order. See
-    /// `2026-08-10-unrecognized-spec-sections/design.md`.
-    pub unrecognized_sections: Vec<String>,
+    /// `##` sections the *delta's* parser did not recognise, carried through
+    /// unchanged and in the same order.
+    pub delta_unrecognized_sections: Vec<UnrecognizedSection>,
+    /// `##` sections the *spec of record's* parser did not recognise, carried
+    /// through the same way. Kept separate from the delta's rather than
+    /// merged: the two come from different documents and mean different
+    /// things to a reader, so the render layer needs to tell them apart
+    /// without re-deriving the origin (see this change's design.md).
+    pub base_unrecognized_sections: Vec<UnrecognizedSection>,
 }

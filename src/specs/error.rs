@@ -27,8 +27,6 @@ impl fmt::Display for Location {
 pub enum StructureErrorKind {
     /// A scenario heading appeared before any requirement heading.
     ScenarioBeforeRequirement,
-    /// A `## <OP> Requirements` section whose operation is not one of the four recognised ones.
-    UnrecognisedOperationSection,
     /// A `- FROM:` bullet in a RENAMED section with no matching `- TO:`.
     RenameMissingTarget,
 }
@@ -38,9 +36,6 @@ impl fmt::Display for StructureErrorKind {
         match self {
             StructureErrorKind::ScenarioBeforeRequirement => {
                 write!(f, "scenario heading appears before any requirement heading")
-            }
-            StructureErrorKind::UnrecognisedOperationSection => {
-                write!(f, "unrecognised requirements section")
             }
             StructureErrorKind::RenameMissingTarget => {
                 write!(f, "rename is missing its `- TO:` target")

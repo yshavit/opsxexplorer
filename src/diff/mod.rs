@@ -3,6 +3,9 @@ mod error;
 mod model;
 mod runs;
 
+/// Re-exported so a consumer of a `CapabilityDiff` can name its unrecognised
+/// sections without also depending on `specs` directly.
+pub use crate::specs::UnrecognizedSection;
 pub use error::DiffError;
 pub use model::{CapabilityDiff, Operation, Piece, RequirementDiff, Run, ScenarioDiff};
 
@@ -139,7 +142,12 @@ pub fn diff(capability: &str, pair: &SpecPair) -> CapabilityDiff {
         requirements,
         errors,
         purpose: purpose_diff(pair),
-        unrecognized_sections: pair.delta.unrecognized_sections.clone(),
+        delta_unrecognized_sections: pair.delta.unrecognized_sections.clone(),
+        base_unrecognized_sections: pair
+            .base
+            .as_ref()
+            .map(|b| b.unrecognized_sections.clone())
+            .unwrap_or_default(),
     }
 }
 
@@ -880,8 +888,12 @@ mod tests {
 
     // --- unrecognised sections carried through (unrecognized-spec-sections 2.3) ---
 
+    fn titles(sections: &[UnrecognizedSection]) -> Vec<&str> {
+        sections.iter().map(|s| s.title.as_str()).collect()
+    }
+
     #[test]
-    fn unrecognised_sections_are_carried_through_unchanged() {
+    fn delta_unrecognised_sections_are_carried_through_unchanged() {
         let delta_md = "## FIRST BOGUS\n\ntext\n\n\
             ## ADDED Requirements\n\n\
             ### Requirement: Foo\n\
@@ -893,14 +905,78 @@ mod tests {
         let pair = pair_from_markdown(delta_md, None);
         let result = diff("cap", &pair);
         assert_eq!(
-            result.unrecognized_sections,
+            titles(&result.delta_unrecognized_sections),
             vec!["FIRST BOGUS", "SECOND BOGUS"]
+        );
+        assert_eq!(result.delta_unrecognized_sections[0].body, "text");
+    }
+
+    #[test]
+    fn base_unrecognised_sections_are_carried_through_unchanged() {
+        let base_md = "## Why\n\nbecause\n\n\
+            ## Requirements\n\n\
+            ### Requirement: Foo\n\
+            Intro.\n\n\
+            #### Scenario: A\n\
+            - **WHEN** a\n\
+            - **THEN** a2\n\n\
+            ## Also Bogus\n\nmore text\n";
+        let pair = pair_from_markdown(REQS_ONLY, Some(base_md));
+        let result = diff("cap", &pair);
+        assert_eq!(
+            titles(&result.base_unrecognized_sections),
+            vec!["Why", "Also Bogus"]
+        );
+        assert_eq!(result.base_unrecognized_sections[0].body, "because");
+        assert!(result.delta_unrecognized_sections.is_empty());
+    }
+
+    #[test]
+    fn both_origins_are_populated_independently() {
+        let delta_md = "## DELTA BOGUS\n\ndelta text\n\n\
+            ## MODIFIED Requirements\n\n\
+            ### Requirement: Foo\n\
+            Intro EDITED.\n\n\
+            #### Scenario: A\n\
+            - **WHEN** a\n\
+            - **THEN** a2\n";
+        let base_md = "## BASE BOGUS\n\nbase text\n\n\
+            ## Requirements\n\n\
+            ### Requirement: Foo\n\
+            Intro.\n\n\
+            #### Scenario: A\n\
+            - **WHEN** a\n\
+            - **THEN** a2\n";
+        let pair = pair_from_markdown(delta_md, Some(base_md));
+        let result = diff("cap", &pair);
+        assert_eq!(
+            titles(&result.delta_unrecognized_sections),
+            vec!["DELTA BOGUS"]
+        );
+        assert_eq!(
+            titles(&result.base_unrecognized_sections),
+            vec!["BASE BOGUS"]
         );
     }
 
     #[test]
-    fn no_unrecognised_sections_yields_empty_vec_on_the_diff() {
+    fn no_unrecognised_sections_yields_empty_vecs_on_the_diff() {
         let pair = pair_from_markdown(REQS_ONLY, Some(BASE_REQS));
-        assert!(diff("cap", &pair).unrecognized_sections.is_empty());
+        let result = diff("cap", &pair);
+        assert!(result.delta_unrecognized_sections.is_empty());
+        assert!(result.base_unrecognized_sections.is_empty());
+    }
+
+    #[test]
+    fn no_spec_of_record_at_all_yields_an_empty_base_list() {
+        let delta_md = "## ADDED Requirements\n\n\
+            ### Requirement: Foo\n\
+            Intro.\n\n\
+            #### Scenario: A\n\
+            - **WHEN** a\n\
+            - **THEN** a2\n";
+        let pair = pair_from_markdown(delta_md, None);
+        assert!(pair.base.is_none());
+        assert!(diff("cap", &pair).base_unrecognized_sections.is_empty());
     }
 }

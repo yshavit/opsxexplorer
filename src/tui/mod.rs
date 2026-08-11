@@ -19,7 +19,7 @@ use crate::changes::Changes;
 use crate::diff::{Operation, Piece};
 
 use app::{App, Focus, PaneView};
-use diff_row::DiffRow;
+use diff_row::{DiffRow, Origin};
 use row::Row;
 
 pub fn run() -> color_eyre::Result<()> {
@@ -348,12 +348,15 @@ fn build_diff_lines(
                 | DiffRow::RemovalNoteLine { indent, .. }
                 | DiffRow::RemovalNoteFull { indent, .. } => *indent == 0,
                 DiffRow::Scenario { .. } => !cursor_is_requirement,
+                // An unrecognised section's body row is revealed by the
+                // section row above it, like `Body` under a scenario.
+                DiffRow::UnrecognizedSectionBody { .. } => false,
                 DiffRow::Requirement { .. }
                 | DiffRow::GroupHeading(_)
                 | DiffRow::Notice(_)
                 | DiffRow::PurposeHeading(_)
-                | DiffRow::UnrecognizedSectionsHeading
-                | DiffRow::UnrecognizedSections { .. } => true,
+                | DiffRow::UnrecognizedSectionsHeading(_)
+                | DiffRow::UnrecognizedSection { .. } => true,
             };
             if leaves_block {
                 reveal_end = lines.len();
@@ -376,15 +379,12 @@ fn build_diff_lines(
                 seen_heading = true;
                 purpose_heading_box(piece, width)
             }
-            DiffRow::UnrecognizedSectionsHeading => {
+            DiffRow::UnrecognizedSectionsHeading(origin) => {
                 if seen_heading {
                     lines.push(Line::default());
                 }
                 seen_heading = true;
-                unrecognized_sections_box(width)
-            }
-            DiffRow::UnrecognizedSections { titles, .. } => {
-                unrecognized_sections_lines(titles, width)
+                unrecognized_sections_heading(*origin, width)
             }
             _ => layout::row_lines(row, width),
         };
@@ -470,38 +470,30 @@ fn purpose_heading_box(piece: &Piece, width: usize) -> Vec<Line<'static>> {
     heading_box(label, style, width)
 }
 
-/// Renders the "Unknown sections" heading, styled and boxed the same way a
-/// requirement-group heading or the purpose heading is — a third thin
-/// wrapper around `heading_box` so the narrow-pane degrade-to-plain-line
-/// behavior comes for free (see `2026-08-10-unrecognized-spec-sections/design.md`).
-fn unrecognized_sections_box(width: usize) -> Vec<Line<'static>> {
-    heading_box("Unknown sections", layout::unrecognised_style(), width)
-}
+/// The parenthetical qualifying the base-sourced "Other sections" heading,
+/// naming where those sections came from. The delta-sourced heading has no
+/// counterpart: its sections came from the change the pane is already
+/// showing, so there is nothing to place them against.
+const BASE_UNRECOGNIZED_SECTIONS_QUALIFIER: &str = "(in the spec of record, not this change)";
 
-/// The unrecognised-sections content row's prompt, encouraging the user to
-/// report a section the tool didn't understand. Ends with a bare URL so it
-/// exercises `wrap_spans`'s existing hard-break-an-overlong-word behavior at
-/// narrow widths, rather than a new wrap mode of its own.
-const UNRECOGNIZED_SECTIONS_PROMPT: &str = "Please consider filing an enhancement request at \
-    https://github.com/yshavit/opsxexplorer/issues";
+/// Renders one origin's "Other sections" heading, boxed and degrading to a
+/// plain line at narrow widths the same way a requirement-group heading or
+/// the purpose heading does — a third thin wrapper around `heading_box`.
+///
+/// The two origins differ only in colour and qualifier: the delta-sourced
+/// heading keeps the purple it has always had, since whether one of its
+/// sections survives the next sync into the spec of record is unspecified;
+/// the base-sourced heading is unstyled and qualifies its label with an
+/// italic parenthetical, since content the delta doesn't mention is
+/// preserved as-is by the project's own sync tooling and so warrants no
+/// call-out (see `unrecognized-sections-in-base/design.md`).
+fn unrecognized_sections_heading(origin: Origin, width: usize) -> Vec<Line<'static>> {
+    let (style, qualifier) = match origin {
+        Origin::Delta => (layout::unrecognised_style(), None),
+        Origin::Base => (Style::default(), Some(BASE_UNRECOGNIZED_SECTIONS_QUALIFIER)),
+    };
 
-/// Renders the unrecognised-sections content row: the italic prompt above,
-/// wrapped to the pane width, followed by one "• <title>" bullet per
-/// unrecognised section title, in the pane's ordinary (unstyled) text color.
-fn unrecognized_sections_lines(titles: &[String], width: usize) -> Vec<Line<'static>> {
-    let prompt_style = layout::unrecognised_style().add_modifier(Modifier::ITALIC);
-    let prompt_spans = vec![Span::styled(UNRECOGNIZED_SECTIONS_PROMPT, prompt_style)];
-
-    let mut lines: Vec<Line<'static>> = wrap::wrap_spans(prompt_spans, width)
-        .into_iter()
-        .map(Line::from)
-        .collect();
-
-    for title in titles {
-        lines.push(Line::from(Span::raw(format!("• {title}"))));
-    }
-
-    lines
+    heading_box_qualified("Other sections", qualifier, style, width)
 }
 
 /// Draws a heading as a small bordered box, the label colored with `style`,
@@ -510,32 +502,57 @@ fn unrecognized_sections_lines(titles: &[String], width: usize) -> Vec<Line<'sta
 /// the two headings' box-drawing and degrade behavior can never drift apart
 /// (see `2026-08-09-render-purpose/design.md`).
 fn heading_box(label: &str, style: Style, width: usize) -> Vec<Line<'static>> {
+    heading_box_qualified(label, None, style, width)
+}
+
+/// `heading_box`, plus an optional italic `qualifier` following the label
+/// inside the same box. The qualifier is part of the heading, not a line
+/// under it, so it counts toward the width the box needs: a qualified
+/// heading degrades to a plain line — label and qualifier together, still on
+/// one line — at a wider pane than the same heading without one (see
+/// `unrecognized-sections-in-base/design.md`).
+fn heading_box_qualified(
+    label: &str,
+    qualifier: Option<&str>,
+    style: Style,
+    width: usize,
+) -> Vec<Line<'static>> {
     let border_style = style;
     let label_style = border_style.add_modifier(Modifier::BOLD);
-    let label_width = label.chars().count();
+    let qualifier_style = border_style.add_modifier(Modifier::ITALIC);
+
+    // The qualifier is preceded by a space of its own, hence the +1.
+    let qualifier_width = qualifier.map_or(0, |q| q.chars().count() + 1);
+    let content_width = label.chars().count() + qualifier_width;
+
+    let mut content = vec![Span::styled(label.to_string(), label_style)];
+    if let Some(qualifier) = qualifier {
+        content.push(Span::raw(" "));
+        content.push(Span::styled(qualifier.to_string(), qualifier_style));
+    }
 
     const BORDER_WIDTH: usize = 2; // the left and right border columns
     const PREFIX_WIDTH: usize = 1; // the space between the border and the label
-    let min_width = BORDER_WIDTH + PREFIX_WIDTH + label_width;
+    let min_width = BORDER_WIDTH + PREFIX_WIDTH + content_width;
 
     if width < min_width {
-        return vec![Line::from(Span::styled(label.to_string(), label_style))];
+        return vec![Line::from(content)];
     }
 
     let inner_width = width - BORDER_WIDTH;
-    let pad = inner_width.saturating_sub(PREFIX_WIDTH + label_width);
+    let pad = inner_width.saturating_sub(PREFIX_WIDTH + content_width);
+
+    let mut middle = vec![Span::styled("│ ", border_style)];
+    middle.extend(content);
+    middle.push(Span::raw(" ".repeat(pad)));
+    middle.push(Span::styled("│", border_style));
 
     vec![
         Line::from(Span::styled(
             format!("╭{}╮", "─".repeat(inner_width)),
             border_style,
         )),
-        Line::from(vec![
-            Span::styled("│ ", border_style),
-            Span::styled(label.to_string(), label_style),
-            Span::raw(" ".repeat(pad)),
-            Span::styled("│", border_style),
-        ]),
+        Line::from(middle),
         Line::from(Span::styled(
             format!("╰{}╯", "─".repeat(inner_width)),
             border_style,
@@ -1054,28 +1071,103 @@ mod tests {
         }
     }
 
-    // --- unrecognized_sections_box / unrecognized_sections_lines (unrecognized-spec-sections 3.6) ---
+    // --- unrecognized_sections_heading (unrecognized-sections-in-base 3.6) ---
 
     #[test]
-    fn unrecognized_sections_box_labels_and_colors_the_heading() {
-        let lines = unrecognized_sections_box(40);
-        assert!(line_text(&lines[1]).contains("Unknown sections"));
+    fn both_unrecognized_sections_headings_read_other_sections() {
+        // Wide enough that both headings are boxed, qualifier and all.
+        for origin in [Origin::Delta, Origin::Base] {
+            let lines = unrecognized_sections_heading(origin, 80);
+            assert!(
+                line_text(&lines[1]).contains("Other sections"),
+                "{origin:?} heading should read \"Other sections\""
+            );
+        }
+    }
+
+    #[test]
+    fn the_delta_sourced_heading_is_purple_and_carries_no_qualifier() {
+        let lines = unrecognized_sections_heading(Origin::Delta, 40);
         assert_eq!(lines[0].spans[0].style, layout::unrecognised_style());
+        // The box's three lines and nothing else.
+        assert_eq!(lines.len(), 3);
+        assert!(line_text(&lines[1]).contains("Other sections"));
+        assert!(!line_text(&lines[1]).contains('('));
     }
 
     #[test]
-    fn unrecognized_sections_box_falls_back_to_a_plain_line_when_too_narrow_for_a_box() {
+    fn the_base_sourced_heading_is_unstyled_and_qualifies_its_label_inside_the_box() {
+        let lines = unrecognized_sections_heading(Origin::Base, 80);
+
+        // Still just the box: the qualifier rides on the label's own line.
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0].spans[0].style, Style::default());
+        assert!(
+            line_text(&lines[1])
+                .contains("Other sections (in the spec of record, not this change)")
+        );
+
+        // The label is bold and the qualifier italic, both in the pane's
+        // ordinary colour.
+        let label = &lines[1].spans[1];
+        assert_eq!(label.content, "Other sections");
+        assert!(label.style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(label.style.fg, None);
+
+        let qualifier = &lines[1].spans[3];
+        assert_eq!(qualifier.content, BASE_UNRECOGNIZED_SECTIONS_QUALIFIER);
+        assert!(qualifier.style.add_modifier.contains(Modifier::ITALIC));
+        assert_eq!(qualifier.style.fg, None);
+    }
+
+    #[test]
+    fn a_qualified_heading_degrades_at_a_wider_pane_than_an_unqualified_one() {
+        // A width that fits "Other sections" boxed, but not the qualifier
+        // with it: the delta-sourced heading is still boxed there, the
+        // base-sourced one has already degraded to its plain line.
+        let width = 30;
+        assert_eq!(unrecognized_sections_heading(Origin::Delta, width).len(), 3);
+
+        let base = unrecognized_sections_heading(Origin::Base, width);
+        assert_eq!(base.len(), 1);
+        assert_eq!(
+            line_text(&base[0]),
+            format!("Other sections {BASE_UNRECOGNIZED_SECTIONS_QUALIFIER}")
+        );
+    }
+
+    #[test]
+    fn no_unrecognized_sections_heading_prompts_for_an_enhancement_request() {
+        for origin in [Origin::Delta, Origin::Base] {
+            for line in unrecognized_sections_heading(origin, 60) {
+                let text = line_text(&line);
+                assert!(!text.contains("enhancement request"), "{text:?}");
+                assert!(!text.contains("github.com"), "{text:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn both_unrecognized_sections_headings_fall_back_to_a_plain_line_when_too_narrow() {
         // Same rule `group_heading_falls_back_...`/`purpose_heading_falls_back_...`
-        // exercise: all three go through the shared `heading_box` helper.
-        let lines = unrecognized_sections_box(5);
-        assert_eq!(lines.len(), 1);
-        assert_eq!(line_text(&lines[0]), "Unknown sections");
+        // exercise: all of them go through the shared `heading_box` helper.
+        assert_eq!(
+            line_text(&unrecognized_sections_heading(Origin::Delta, 5)[0]),
+            "Other sections"
+        );
+        assert_eq!(unrecognized_sections_heading(Origin::Delta, 5).len(), 1);
+
+        // The base-sourced heading degrades the same way, to a single line
+        // carrying its label and qualifier together.
+        let base = unrecognized_sections_heading(Origin::Base, 5);
+        assert_eq!(base.len(), 1);
+        assert!(line_text(&base[0]).starts_with("Other sections ("));
     }
 
     #[test]
-    fn unrecognized_sections_box_content_never_overflows_its_own_border() {
+    fn unrecognized_sections_heading_content_never_overflows_its_own_border() {
         for width in 10..=30 {
-            let lines = unrecognized_sections_box(width);
+            let lines = unrecognized_sections_heading(Origin::Delta, width);
             let border_width = line_text(&lines[0]).chars().count();
             for line in &lines {
                 assert!(
@@ -1084,50 +1176,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn unrecognized_sections_lines_render_a_bullet_per_title_in_order() {
-        let titles = vec!["First Bogus".to_string(), "Second Bogus".to_string()];
-        let lines = unrecognized_sections_lines(&titles, 200);
-
-        let bullet_lines: Vec<String> = lines
-            .iter()
-            .map(line_text)
-            .filter(|t| t.starts_with('•'))
-            .collect();
-        assert_eq!(bullet_lines, vec!["• First Bogus", "• Second Bogus"]);
-
-        // The bullets are in the pane's ordinary (unstyled) text color.
-        for line in lines.iter().filter(|l| line_text(l).starts_with('•')) {
-            for span in &line.spans {
-                assert_eq!(span.style, Style::default());
-            }
-        }
-    }
-
-    #[test]
-    fn unrecognized_sections_lines_prompt_is_purple_and_italic() {
-        let titles = vec!["Bogus".to_string()];
-        let lines = unrecognized_sections_lines(&titles, 200);
-
-        // The prompt precedes the bullet and carries the unrecognised style
-        // plus italics.
-        let prompt_line = lines
-            .iter()
-            .find(|l| !line_text(l).starts_with('•'))
-            .expect("expected a prompt line before the bullet");
-        for span in &prompt_line.spans {
-            assert_eq!(span.style.fg, layout::unrecognised_style().fg);
-            assert!(span.style.add_modifier.contains(Modifier::ITALIC));
-        }
-    }
-
-    #[test]
-    fn unrecognized_sections_lines_with_no_titles_still_renders_the_prompt() {
-        let lines = unrecognized_sections_lines(&[], 200);
-        assert!(!lines.is_empty());
-        assert!(!lines.iter().any(|l| line_text(l).starts_with('•')));
     }
 
     #[test]
@@ -1214,33 +1262,86 @@ mod tests {
         assert_eq!(reveal_end, end);
     }
 
+    fn section_row(title: &str, expanded: bool) -> DiffRow<'_> {
+        DiffRow::UnrecognizedSection {
+            title,
+            expanded,
+            key: diff_row::RowKey::UnrecognizedSection {
+                capability: "cap".to_string(),
+                origin: Origin::Delta,
+                index: 0,
+            },
+        }
+    }
+
     #[test]
-    fn build_diff_lines_selects_the_unrecognized_sections_content_row_not_the_heading() {
+    fn build_diff_lines_selects_an_unrecognized_section_row_not_its_heading() {
         let added = crate::diff::Operation::Added;
-        let titles = vec!["Bogus".to_string()];
         let rows = vec![
             req_row("A", &added),
-            DiffRow::UnrecognizedSectionsHeading,
-            DiffRow::UnrecognizedSections {
-                titles: &titles,
-                key: diff_row::RowKey::UnrecognizedSections {
-                    capability: "cap".to_string(),
-                },
-            },
+            DiffRow::UnrecognizedSectionsHeading(Origin::Delta),
+            section_row("Bogus", false),
         ];
 
-        // Cursor on the content row (index 2).
+        // Cursor on the section row (index 2).
         let (lines, selected_range, _) = build_diff_lines(&rows, 40, 2);
 
         // req(A) is the first row, so no blank spacer precedes the first
-        // heading it meets: req line + 3-line heading box, then the content
-        // row's own lines (prompt + one bullet).
+        // heading it meets: req line + 3-line heading box, then the section
+        // row's own single line.
         let (start, end) = selected_range.expect("expected a selected range");
         assert_eq!(start, 1 + 3); // req line + 3-line box
-        assert!(end > start, "content row should render at least one line");
         assert_eq!(end, lines.len());
-        assert!(line_text(&lines[start]).contains("Please consider filing"));
-        assert!(line_text(&lines[end - 1]).starts_with('•'));
+        assert!(line_text(&lines[start]).contains("Bogus"));
+    }
+
+    #[test]
+    fn reveal_end_extends_through_an_expanded_sections_body() {
+        let body = "line one\nline two\nline three";
+        let rows = vec![
+            DiffRow::UnrecognizedSectionsHeading(Origin::Delta),
+            section_row("Bogus", true),
+            DiffRow::UnrecognizedSectionBody { text: body },
+            section_row("Other", false),
+        ];
+
+        // Cursor on the expanded section row (index 1).
+        let (_, selected_range, reveal_end) = build_diff_lines(&rows, 40, 1);
+        let (_, end) = selected_range.expect("expected a selected range");
+
+        // The body's three lines are part of what the section row revealed;
+        // the sibling section row that follows is not.
+        assert_eq!(reveal_end, end + 3);
+    }
+
+    #[test]
+    fn an_expanded_sections_body_renders_in_full_and_unstyled() {
+        let body = "a very long unrecognised section body ".repeat(10);
+        let rows = vec![
+            DiffRow::UnrecognizedSectionsHeading(Origin::Base),
+            section_row("Bogus", true),
+            DiffRow::UnrecognizedSectionBody { text: &body },
+        ];
+        let (lines, _, _) = build_diff_lines(&rows, 40, 1);
+
+        // Every word of the body survives, wrapped rather than truncated.
+        let rendered: String = lines.iter().map(line_text).collect::<Vec<_>>().join(" ");
+        assert!(
+            !rendered.contains('…'),
+            "the body should never be truncated"
+        );
+        assert_eq!(
+            rendered.matches("unrecognised").count(),
+            10,
+            "every repetition of the body should be rendered"
+        );
+
+        // And it carries no colour of its own.
+        for line in lines.iter().skip(1) {
+            for span in &line.spans {
+                assert_eq!(span.style.fg, None);
+            }
+        }
     }
 
     // --- clamp_offset: the actual scroll-position fix ---
