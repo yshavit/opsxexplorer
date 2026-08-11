@@ -1,0 +1,42 @@
+## Context
+
+See proposal.md - Why. Three things from the exploration behind this design that aren't obvious from the specs alone:
+
+- The bug this fixes (opsxexplorer#24) exists because of a scoping decision made in the archived `2026-08-10-unrecognized-spec-sections` change (which fixed opsxexplorer#11): its design doc explicitly left `parse_spec` untouched, reasoning "it only ever serves as a diff base, is never rendered on its own, and keeps failing on unrecognised sections." That reasoning covered the happy path but missed that `load()` (`src/specs/load.rs:61`) propagates `parse_spec`'s error with `?`, and that error becomes the tab's `Result<CapabilityDiff, SpecError>` in `App::pane_view()` — so the base spec's parse *failure*, unlike its parsed *content*, is absolutely rendered, blanking the whole tab exactly like the bug #11 fixed.
+- Reading `/opsx:sync`'s own instructions (`.claude/skills/openspec-sync-specs/SKILL.md`) settled an open design question: base-spec content the delta doesn't mention is guaranteed preserved (`SKILL.md:214`, "Preserve existing content not mentioned in delta"), but a delta's own unrecognised section has no defined merge rule at all — its survival into the base spec on the next sync is left to whichever agent runs it, i.e. unspecified. This asymmetry is why the two headings this change adds are styled differently rather than identically.
+- A feasibility pass on unifying `parse_spec`/`parse_delta` into one function was explicitly ruled out (see the parallel investigation in this same conversation) — the true duplication between their bodies is ~6-8 lines, the two produce structurally different models (`Delta` carries `DeltaOp`-tagged entries and renames; `Spec` has neither, by design — `2026-08-08-spec-model/design.md:58-60`), and the codebase has an already-recorded preference (`2026-08-10-unrecognized-spec-sections/design.md:17`) against a generic section-handler mechanism. This change does not attempt that unification; it only converges the *shape* of what each parser collects for its unrecognised sections, which was already going to happen as a side effect of this work.
+
+## Goals / Non-Goals
+
+**Goals:**
+- Stop an unrecognised `##` section in a spec of record from failing that capability's whole diff.
+- Show enough of an unrecognised section — title and full body, not just title — that the user doesn't have to go open the raw file to see what the tool skipped.
+- Make the two origins (this change's own delta vs. the pre-existing spec of record) visually distinguishable, since they carry different levels of urgency: a delta-sourced section's fate on the next sync is unspecified; a base-sourced section is guaranteed to survive.
+
+**Non-Goals:**
+- Rendering the unrecognised section's body as formatted markdown. It's shown as the same plain rendered-body text `render_body` already produces for a requirement's intro — no new rendering system.
+- Unifying `parse_spec` and `parse_delta` into a single function or a generic section-dispatch mechanism (see Context above).
+- Any change to how a *recognised* section is parsed, compared, or rendered. This change only touches the fallback (unrecognised-title) path on both parsers and the rendering of what that path collects.
+- A visible summary/count elsewhere in the UI (e.g. in the tab bar) hinting that a tab has unrecognised sections. Out of scope unless it proves necessary in practice — same trade-off the original #11 design accepted.
+
+## Decisions
+
+**Both parsers converge on one `UnrecognizedSection { title: String, body: String }` shape**, replacing `Delta`'s title-only `Vec<String>`. `parse_spec`'s fallback arm (`parse.rs:30`) changes from `return Err(...)` to pushing `UnrecognizedSection { title, body: render_body(&doc.ctx, &section.body) }` and continuing, mirroring `parse_delta`'s existing fallback arm, which gains the same `body` capture. `Spec` gains an `unrecognized_sections: Vec<UnrecognizedSection>` field with the same shape and ordering guarantee `Delta`'s already has.
+
+**`CapabilityDiff` carries two separate lists, not one merged list.** `diff()` (`diff/mod.rs:142`) sets a `delta_unrecognized_sections` field from `pair.delta.unrecognized_sections` and a `base_unrecognized_sections` field from `pair.base.as_ref().map_or(&[], |b| &b.unrecognized_sections)`, verbatim, no interpretation. Keeping them separate (rather than concatenating into one list at this layer) is what lets the render layer apply different styling per origin without re-deriving which section came from where.
+
+**Two `GroupHeading`-shaped runs in the row tree, not one.** `flatten()` (`diff_row.rs`) pushes a delta-sourced heading + one row per delta-sourced section (if non-empty), then a base-sourced heading + one row per base-sourced section (if non-empty) — structurally the same pattern already used for Added/Modified/Removed/Renamed requirement groups, just with a fixed two-group order instead of one keyed by `Operation`. Each section's row is shaped like a `Requirement` row: an arrow, collapsed by default, its own `RowKey`. Because two sections (same or different origin) can share a title, the key is index-addressed within its origin's list — `RowKey::UnrecognizedSection { capability, origin: Origin, index: usize }` (`Origin` a two-variant enum, `Delta` | `Base`) — following the precedent `RowKey::RemovalNoteLine` already set for exactly this "content, not position, isn't a stable enough identity" reason.
+
+**Expanding a section's row shows its full body, with no further collapse layer.** Unlike a requirement's intro or a removal-note line, which excerpt-and-collapse again if their text doesn't fit the row width, an unrecognised section's body is opaque content the tool doesn't understand structurally — there's no meaningful shorter "excerpt" of it to fall back to, the same reasoning that already makes a `Piece::Replaced` always-collapsible-or-nothing rather than excerpted. One `Enter`/`Space`/`l` toggle reveals everything.
+
+**Both headings read "Other sections"; only styling and a subtitle distinguish them.** The delta-sourced heading keeps the existing purple (`layout::unrecognised_style()`, `Color::Rgb(147, 51, 234)`) — unchanged from #11 — specifically because its fate on the next sync is unspecified (see Context). The base-sourced heading uses the pane's ordinary unstyled text color and carries a second, italic line noting the sections are "in the spec of record, not this change" — unstyled because base content the delta doesn't touch is guaranteed preserved, so there's nothing to call urgent attention to. Both still route through `heading_box`, so the narrow-pane degrade-to-plain-line behavior is unchanged.
+
+**The old "Please consider filing an enhancement request..." prompt is removed entirely**, along with the flat bullet-list rendering it introduced. Once a section's actual content is one keystroke away, the prompt's job — telling the user something is being hidden from them — no longer describes what's happening.
+
+**Ordering: delta-sourced group first, then base-sourced group, always.** This is a fixed layout decision, not derived from document order between the two files (they're unrelated documents) — matches how Added/Modified/Removed/Renamed already render in a fixed group order rather than a file-position order.
+
+## Risks / Trade-offs
+
+- **Two visually different headings for "a section the tool didn't parse" is one more thing for a first-time user to learn** than the single purple box #11 shipped. Accepted: the two cases genuinely mean different things (unspecified-fate vs. guaranteed-preserved), and collapsing them back into one box would either lose that distinction or force one styling to misrepresent one of the two cases.
+- **`RowKey` gains a new `Origin` dimension**, which every other `RowKey` variant doesn't need. Contained to the one variant; no change to existing key shapes.
+- **Silent behavior change for a base spec that previously hard-failed on an extra section.** Before this change, a base spec like OpenSpec's `cli-init` (with a `## Why` section) made every change touching that capability unusable in the pane. After, it's a collapsed row at the bottom. This is the intended fix for #24, not a side effect.
