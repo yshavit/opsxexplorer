@@ -1049,16 +1049,8 @@ mod tests {
         let lines = row_lines(&row, 60);
         assert_eq!(lines.len(), 2, "expected the two names on separate lines");
 
-        let first: String = lines[0]
-            .spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect();
-        let second: String = lines[1]
-            .spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect();
+        let first: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        let second: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(first.contains("Totally Different Old Title"));
         assert!(second.contains("Completely Unrelated New Title"));
 

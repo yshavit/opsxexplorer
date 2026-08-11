@@ -61,12 +61,16 @@ pub struct ScenarioDiff {
 pub enum Operation {
     Added,
     Modified,
-    Removed { note: String },
+    Removed {
+        note: String,
+    },
     /// `title` compares the former name against the new name, using the same
     /// changed-vs-replaced judgement as any other piece (see
     /// `compare::changed_or_unchanged`), so it renders through the same path
     /// as any other compared text.
-    Renamed { title: Piece },
+    Renamed {
+        title: Piece,
+    },
 }
 
 /// `name` is always the display name: for a rename that is the new name,
