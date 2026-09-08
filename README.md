@@ -2,6 +2,13 @@
 
 TUI viewer for [OpenSpec] spec diffs.
 
+> [!CAUTION]
+> **ARCHIVED AND DEPRECATED**
+> I'm no longer maintaining this because:
+> 
+> - OpenSpec has a built-in diff tool as of Fission-AI/OpenSpec#980
+> - I don't use OpenSpec anymore
+
 > [!IMPORTANT]
 > Not affiliated with OpenSpec. This is my own, independent project.
 
